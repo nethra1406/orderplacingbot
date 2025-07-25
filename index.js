@@ -67,12 +67,7 @@ app.post('/webhook', async (req, res) => {
       if (code.startsWith("ORD-")) {
         order = await ordersCollection.findOne({ orderId: code });
       } else {
-        // Try to match by last 3+ digits
-        const allPending = await ordersCollection
-          .find({ status: "pending" })
-          .sort({ createdAt: -1 })
-          .toArray();
-
+        const allPending = await ordersCollection.find({ status: "pending" }).sort({ createdAt: -1 }).toArray();
         order = allPending.find(o => o.orderId.endsWith(code));
       }
 
@@ -97,7 +92,16 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🧺 Order flow starts here
+    // ✅ Greetings handler
+    const greetings = ['hi', 'hello', 'hey', 'vanakkam', 'hola', 'hai', 'namaste'];
+    if (greetings.includes(msgBody.toLowerCase())) {
+      await sendText(from, '👋 Hello! Let’s get started with your laundry order. Sending you the catalog...');
+      sessions[from] = { step: 'catalog', cart: [], userInfo: {} };
+      await sendCatalog(from);
+      sessions[from].step = 'ordering';
+      return res.sendStatus(200);
+    }
+
     if (userOrderStatus[from] === 'placed' && msgBody.toLowerCase() === 'place order') {
       await sendText(from, '✅ Order already placed. Please wait.');
       return res.sendStatus(200);
@@ -114,7 +118,7 @@ app.post('/webhook', async (req, res) => {
       case 'ordering':
         if (msgBody.toLowerCase() === 'done') {
           if (!session.cart.length) {
-            await sendText(from, '🛒 Cart is empty!');
+            await sendText(from, '🛒 Cart is empty! Add something like "Shirt x 2" first.');
           } else {
             session.step = 'get_name';
             await sendText(from, '👤 Enter your full name:');
@@ -126,60 +130,71 @@ app.post('/webhook', async (req, res) => {
             await sendText(from, `✅ Added: ${item.name} x ${item.qty}`);
             await sendText(from, '🛒 Add more or type "done"');
           } else {
-            await sendText(from, '⚠ Format: "Shirt x 2"');
+            await sendText(from, '⚠ Use format like "Shirt x 2" to add items.');
           }
         }
         break;
 
       case 'get_name':
-        session.userInfo.name = msgBody;
-        session.step = 'get_address';
-        await sendText(from, '📍 Enter delivery address:');
+        if (msgBody.length < 2) {
+          await sendText(from, '⚠ Name too short. Please enter your full name.');
+        } else {
+          session.userInfo.name = msgBody;
+          session.step = 'get_address';
+          await sendText(from, '📍 Enter delivery address:');
+        }
         break;
 
       case 'get_address':
-        session.userInfo.address = msgBody;
-        session.step = 'get_payment';
-        await sendText(from, '💳 Payment method: Cash / UPI / Card');
+        if (msgBody.length < 5) {
+          await sendText(from, '⚠ Please enter a valid delivery address.');
+        } else {
+          session.userInfo.address = msgBody;
+          session.step = 'get_payment';
+          await sendText(from, '💳 Payment method: Cash / UPI / Card');
+        }
         break;
 
       case 'get_payment':
-        session.userInfo.payment = msgBody;
-        session.step = 'confirm_order';
-        await sendOrderSummary(from, session);
+        const paymentType = msgBody.toLowerCase();
+        if (!['cash', 'upi', 'card'].includes(paymentType)) {
+          await sendText(from, '⚠ Invalid option. Choose Cash / UPI / Card');
+        } else {
+          session.userInfo.payment = msgBody;
+          session.step = 'confirm_order';
+          await sendOrderSummary(from, session);
+        }
         break;
 
       case 'confirm_order':
         if (msgBody.toLowerCase() !== 'place order') {
-          await sendText(from, '❓ Type "Place Order" to confirm.');
-          return res.sendStatus(200);
+          await sendText(from, '❓ To confirm your order, type "Place Order".');
+        } else {
+          const orderId = `ORD-${Date.now()}`;
+          await saveOrder({
+            orderId,
+            customerPhone: from,
+            cart: session.cart,
+            userInfo: session.userInfo,
+            status: 'pending',
+            createdAt: new Date()
+          });
+
+          userOrderStatus[from] = 'placed';
+          setTimeout(() => delete userOrderStatus[from], 10 * 60 * 1000);
+
+          await sendText(from, `🎉 Order ${orderId} placed! Finding vendor...`);
+          for (const vendor of vendors) {
+            await sendFullOrderToVendor(vendor, orderId, from, session);
+          }
+
+          delete sessions[from];
         }
-
-        const orderId = `ORD-${Date.now()}`;
-        await saveOrder({
-          orderId,
-          customerPhone: from,
-          cart: session.cart,
-          userInfo: session.userInfo,
-          status: 'pending',
-          createdAt: new Date()
-        });
-
-        userOrderStatus[from] = 'placed';
-        setTimeout(() => delete userOrderStatus[from], 10 * 60 * 1000);
-
-        await sendText(from, `🎉 Order ${orderId} placed! Finding vendor...`);
-
-        for (const vendor of vendors) {
-          await sendFullOrderToVendor(vendor, orderId, from, session);
-        }
-
-        delete sessions[from];
         break;
 
       default:
-        session.step = 'catalog';
-        await sendText(from, '🤖 Type anything to start ordering.');
+        await sendText(from, `🤖 I'm not sure what that means. Please follow the steps or type "done" to continue.`);
+        break;
     }
 
     sessions[from] = session;
