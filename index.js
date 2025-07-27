@@ -3,45 +3,42 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
-const { saveOrder } = require('./db');
+const { MongoClient } = require('mongodb');
 
 const app = express();
 const port = process.env.PORT || 10000;
 app.use(bodyParser.json());
 
-const sessions = {};
-const userOrderStatus = {};
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
 
+const sessions = {};
 const verifiedNumbers = [
   '919916814517', '917358791933', '918072462490',
   '919444631398', '919043331484', '919710486191', '918838547515'
 ];
 
-const catalogueItems = [
-  { id: 'shirt_001', name: 'Shirts', price: 15 },
-  { id: 'pants_001', name: 'Pants', price: 20 },
-  { id: 'saree_001', name: 'Sarees', price: 100 },
-  { id: 'suits_001', name: 'Suits', price: 250 },
-  { id: 'bedsheets_001', name: 'Bed sheets', price: 60 },
-  { id: 'winterwears_001', name: 'Winter wear', price: 150 },
-  { id: 'curtains_001', name: 'Curtains', price: 120 },
-  { id: 'stainremoval_001', name: 'Stain Removal', price: 50 }
-];
+const CATALOG_ID = '1189444639537872'; // ✅ Your actual catalog ID
 
-// =================== Webhook Verification ===================
+// ============== MONGO ===================
+async function saveOrder(order) {
+  const db = mongoClient.db('whatsappBot');
+  const collection = db.collection('orders');
+  await collection.insertOne(order);
+}
+
+// ============== WEBHOOKS ===================
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
-    console.log('✅ Webhook verified');
+    console.log('✅ WEBHOOK_VERIFIED');
     return res.status(200).send(challenge);
   }
   res.sendStatus(403);
 });
 
-// =================== Webhook Receiver ===================
 app.post('/webhook', async (req, res) => {
   const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   if (!message) return res.sendStatus(404);
@@ -50,7 +47,7 @@ app.post('/webhook', async (req, res) => {
   const msg = message.text?.body?.trim().toLowerCase();
 
   if (!verifiedNumbers.includes(from)) {
-    await sendText(from, '⚠️ Access restricted to verified users.');
+    await sendText(from, '⚠ Access restricted to verified users.');
     return res.sendStatus(200);
   }
 
@@ -59,46 +56,42 @@ app.post('/webhook', async (req, res) => {
   switch (session.step) {
     case 'greet':
       if (['hi', 'hello', 'hey', 'vanakkam'].includes(msg)) {
-        await sendCatalogMessage(from);
+        await sendCatalogView(from);
         session.step = 'ordering';
       } else {
-        await sendText(from, '👋 Type "hi" to begin your order.');
+        await sendText(from, '👋 Hello! Type "hi" to view our catalog and start ordering.');
       }
       break;
 
     case 'ordering':
-      const selected = catalogueItems.find(i => msg.includes(i.name.toLowerCase()));
-      if (selected) {
-        session.cart.push({ ...selected, qty: 1 });
-        await sendText(from, `✅ Added: ${selected.name} x 1.\nReply with another item or type "done" to proceed.`);
-      } else if (msg === 'done') {
+      if (msg === 'done') {
         if (!session.cart.length) {
-          await sendText(from, '🛒 Your cart is empty. Please choose an item from our catalogue.');
+          await sendText(from, '🛒 Your cart is empty.');
         } else {
           session.step = 'get_name';
           await sendText(from, '👤 Please enter your name:');
         }
       } else {
-        await sendText(from, '📦 Choose an item from our catalog (e.g., "Shirts", "Pants") or type "done".');
+        await sendText(from, '🛍 Tap items in the catalog and type "done" once finished.');
       }
       break;
 
     case 'get_name':
-      session.userInfo.name = message.text.body.trim();
+      session.userInfo.name = message.text.body;
       session.step = 'get_address';
-      await sendText(from, '📍 Please enter your address:');
+      await sendText(from, '📍 Enter your address:');
       break;
 
     case 'get_address':
-      session.userInfo.address = message.text.body.trim();
+      session.userInfo.address = message.text.body;
       session.step = 'get_payment';
-      await sendText(from, '💳 Choose payment method: Cash / UPI / Card');
+      await sendText(from, '💳 Payment method (Cash / UPI / Card):');
       break;
 
     case 'get_payment':
-      session.userInfo.payment = message.text.body.trim();
+      session.userInfo.payment = message.text.body;
       session.step = 'confirm_order';
-      await sendOrderSummary(from, session);
+      await sendText(from, '🧾 Type "Place Order" to confirm your order.');
       break;
 
     case 'confirm_order':
@@ -112,8 +105,7 @@ app.post('/webhook', async (req, res) => {
           status: 'pending',
           createdAt: new Date()
         });
-        userOrderStatus[from] = 'placed';
-        await sendText(from, `🎉 Your order ${orderId} has been placed successfully!\nWe’ll update you once it’s picked up.`);
+        await sendText(from, `🎉 Your order ${orderId} has been placed!`);
         delete sessions[from];
       } else {
         await sendText(from, '❓ Please type "Place Order" to confirm.');
@@ -121,14 +113,14 @@ app.post('/webhook', async (req, res) => {
       break;
 
     default:
-      await sendText(from, '🤖 Type "hi" to start placing your order.');
+      await sendText(from, '🤖 Type "hi" to start ordering.');
   }
 
   sessions[from] = session;
   res.sendStatus(200);
 });
 
-// =================== Utilities ===================
+// ============== FUNCTIONS ===================
 async function sendText(to, text) {
   await axios.post(
     `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -146,28 +138,44 @@ async function sendText(to, text) {
   );
 }
 
-async function sendCatalogMessage(to) {
-  const msg = '🧺 *Mochitochi Laundry Catalogue*\n\n' +
-    catalogueItems.map(i => `• ${i.name} – ₹${i.price}`).join('\n') +
-    '\n\nType an item name to add to your cart.\nType *done* to continue.';
-  await sendText(to, msg);
+async function sendCatalogView(to) {
+  await axios.post(
+    `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'product_list',
+        header: { type: 'text', text: '🧺 Mochitochi Laundry Catalogue' },
+        body: {
+          text: 'Tap to view our top laundry services and pricing.'
+        },
+        footer: { text: '👇 Tap below to view and order!' },
+        action: {
+          catalog_id: CATALOG_ID,
+          sections: [
+            {
+              title: 'Laundry Services',
+              product_items: [] // WhatsApp auto-fills this from your catalog
+            }
+          ]
+        }
+      }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
 }
 
-async function sendOrderSummary(to, session) {
-  const { cart, userInfo } = session;
-  let total = 0;
-  const summaryItems = cart.map(item => {
-    const cost = item.qty * item.price;
-    total += cost;
-    return `• ${item.name} x ${item.qty} = ₹${cost}`;
-  }).join('\n');
-
-  const summary = `🧾 *Order Summary*\n${summaryItems}\n\n👤 ${userInfo.name}\n🏠 ${userInfo.address}\n💳 ${userInfo.payment}\n💰 Total: ₹${total}\n\n✅ Type *Place Order* to confirm.`;
-
-  await sendText(to, summary);
-}
-
-// =================== Start Server ===================
-app.listen(port, () => {
-  console.log(`✅ Server is running at http://localhost:${port}`);
+// ============== START ===================
+mongoClient.connect().then(() => {
+  app.listen(port, () => {
+    console.log(`✅ Server running at http://localhost:${port}`);
+  });
 });
