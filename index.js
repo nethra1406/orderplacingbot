@@ -237,7 +237,6 @@ async function handleProceedCheckout(phoneNumber) {
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_NAME });
 }
 
-// RE-IMPLEMENTED with buttons
 async function handleNameInput(phoneNumber, name) {
     const session = getUserSession(phoneNumber);
     session.userData.name = name;
@@ -252,21 +251,19 @@ async function handleNameInput(phoneNumber, name) {
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_ADDRESS, userData: session.userData });
 }
 
-// RE-IMPLEMENTED with button logic
 async function handleAddressInput(phoneNumber, input) {
     const session = getUserSession(phoneNumber);
 
     if (input === 'type_address') {
         await sendTextMessage(phoneNumber, 'Please type your full address now.');
-        return; // Wait for user to type the address
+        return; 
     }
 
     if (input === 'share_location') {
         await sendTextMessage(phoneNumber, 'Please use the (+) button in WhatsApp to share your live or current location.');
-        return; // Wait for user to share location
+        return;
     }
     
-    // This part runs when the user actually sends their address text or location
     session.userData.address = input;
     const buttons = [
       { type: 'reply', reply: { id: 'cash', title: '💵 Cash on Delivery' } },
@@ -346,11 +343,12 @@ async function handleMessage(message) {
     return;
   }
   
-  // Handle location messages
+  // *** FIX: Added logic to handle incoming location messages ***
   if (message.type === 'location') {
       const session = getUserSession(phoneNumber);
       if (session.state === SESSION_STATES.WAITING_FOR_ADDRESS) {
-          const address = `Lat: ${message.location.latitude}, Long: ${message.location.longitude}`;
+          console.log(`📍 Received location from ${phoneNumber}.`);
+          const address = `Location Pin: (Lat: ${message.location.latitude}, Long: ${message.location.longitude})`;
           await handleAddressInput(phoneNumber, address);
       }
       return;
@@ -391,7 +389,7 @@ async function handleMessage(message) {
         await handleNameInput(phoneNumber, input);
         break;
       
-      // FIX: Corrected the typo from SESSION_ATES to SESSION_STATES
+      // *** FIX: Corrected typo from SESSION_ATES to SESSION_STATES ***
       case SESSION_STATES.WAITING_FOR_ADDRESS:
         await handleAddressInput(phoneNumber, input);
         break;
