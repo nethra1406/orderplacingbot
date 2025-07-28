@@ -76,6 +76,10 @@ async function saveOrder(order) {
 async function handleMessage(event) {
   const from = event.from;
   let message = event.message?.text?.body?.toLowerCase() || event.message?.interactive?.button_reply?.id;
+  if (!message) {
+    console.error('No valid message data received:', event);
+    return; // Exit if no message data
+  }
   let userData = {};
   let order = {};
 
@@ -113,20 +117,20 @@ async function handleMessage(event) {
     await sendMessage(from, 'Order placed! Awaiting vendor acceptance...');
     await sendMessage(VENDOR_PHONE_1, `New Order: ${order.items.join(', ')}. User: ${order.name}. Address: ${order.address}. Confirm?`);
     setTimeout(async () => {
-      await sendMessage(from, 'Vendor accepted your order! Collection time: 12:00 AM IST (Jul 29).');
+      await sendMessage(from, 'Vendor accepted your order! Collection time: 12:30 AM IST (Jul 29).');
       await sendMessage(from, 'Vendor confirmation sent.');
       await sendMessage(VENDOR_PHONE_1, `User accepted. Proceed with collection.`);
       await sendMessage(DELIVERY_PARTNER_PHONE, `Pick up order from vendor. User: ${order.name}, Address: ${order.address}.`);
       setTimeout(async () => {
         await sendMessage(from, 'Delivery partner has collected your items. Progress: In Transit.');
-        await sendMessage(from, 'Estimated delivery: 01:00 AM IST (Jul 29).');
+        await sendMessage(from, 'Estimated delivery: 01:30 AM IST (Jul 29).');
         setTimeout(async () => {
           await sendMessage(from, 'Order delivered! Please rate us: [👍] [👎]');
           await sendMessage(DELIVERY_PARTNER_PHONE, 'Delivery completed. Collect feedback.');
         }, 5000);
       }, 5000);
     }, 5000);
-  } else if (message.includes('👍') || message.includes('👎')) {
+  } else if (typeof message === 'string' && (message.includes('👍') || message.includes('👎'))) {
     await sendMessage(from, 'Thank you for your feedback!');
     await saveOrder({ ...order, feedback: message });
   }
