@@ -1,294 +1,162 @@
-// index.js
-require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const bodyParser = require('body-parser');
-const { 
-    connectDB, 
-    seedDatabase,
-    saveOrUpdateOrder, 
-    getOrder,
-    findNearestVendor,
-    findAvailableDeliveryPartner
-} = require('./db');
+const { MongoClient } = require('mongodb');
 
 const app = express();
-const port = process.env.PORT || 10000;
-app.use(bodyParser.json());
+app.use(express.json());
 
-const sessions = {};
-const VENDOR_PHONE_1 = process.env.VENDOR_PHONE_1;
-const DELIVERY_PARTNER_PHONE = process.env.DELIVERY_PARTNER_PHONE;
+// Load environment variables
+const {
+  PHONE_NUMBER_ID,
+  ACCESS_TOKEN,
+  VERIFY_TOKEN,
+  MONGODB_URI,
+  DB_NAME,
+  VENDOR_PHONE_1,
+  DELIVERY_PARTNER_PHONE,
+  CATALOG_ID
+} = process.env;
 
-// ================== WEBHOOK ==================
+const client = new MongoClient(MONGODB_URI || 'mongodb://localhost:27017');
 
+async function sendMessage(to, message, buttons = null) {
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: message },
+      action: {
+        buttons: buttons || [
+          { type: 'reply', reply: { id: 'order_now', title: '🛍 Order Now' } },
+          { type: 'reply', reply: { id: 'contact_us', title: '📞 Contact Us' } },
+          { type: 'reply', reply: { id: 'help', title: '❓ Help' } },
+        ],
+      },
+    },
+  };
+  try {
+    await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+    });
+  } catch (error) {
+    console.error('Error sending message:', error);
+  }
+}
+
+async function sendCatalog(to) {
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  try {
+    await axios.post(url, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'catalog_message',
+      catalog_id: CATALOG_ID, // Use the provided catalog ID
+    });
+  } catch (error) {
+    console.error('Error sending catalog:', error);
+  }
+}
+
+async function saveOrder(order) {
+  try {
+    await client.connect();
+    const db = client.db(DB_NAME || 'laundryBot');
+    const collection = db.collection('orders');
+    await collection.insertOne(order);
+  } catch (error) {
+    console.error('Error saving order:', error);
+  } finally {
+    await client.close();
+  }
+}
+
+async function handleMessage(event) {
+  const from = event.from;
+  let message = event.message?.text?.body?.toLowerCase() || event.message?.interactive?.button_reply?.id;
+  let userData = {};
+  let order = {};
+
+  if (message === 'hi') {
+    await sendMessage(from, 'Welcome to [Your Laundry Co.]! How can we assist you today?');
+  } else if (message === 'order_now') {
+    await sendCatalog(from);
+    await sendMessage(from, 'Please select items from the catalog and place your order.');
+    setTimeout(() => sendMessage(from, 'Please enter your name.', [{ type: 'reply', reply: { id: 'skip_name', title: 'Skip' } }]), 2000);
+  } else if (message === 'skip_name' || userData.name) {
+    userData.name = userData.name || 'User';
+    await sendMessage(from, 'Please share your location or address.', [{ type: 'reply', reply: { id: 'default_loc', title: 'Use Default Location' } }]);
+  } else if (message === 'default_loc' || userData.address) {
+    userData.address = userData.address || 'Default Address';
+    await sendMessage(from, 'Choose payment method:', [
+      { type: 'reply', reply: { id: 'cash', title: 'Cash' } },
+      { type: 'reply', reply: { id: 'upi', title: 'UPI' } },
+      { type: 'reply', reply: { id: 'card', title: 'Card' } },
+    ]);
+  } else if (['cash', 'upi', 'card'].includes(message)) {
+    userData.payment = message;
+    order = {
+      items: ['2 Shirts', '1 Comforter'],
+      name: userData.name,
+      address: userData.address,
+      payment: userData.payment,
+      total: 14,
+      timestamp: new Date(),
+    };
+    await saveOrder(order);
+    await sendMessage(from, `Order Summary: ${order.items.join(', ')}. Total: $${order.total}. Place Order?`, [
+      { type: 'reply', reply: { id: 'place_order', title: 'Place Order' } },
+    ]);
+  } else if (message === 'place_order') {
+    await sendMessage(from, 'Order placed! Awaiting vendor acceptance...');
+    await sendMessage(VENDOR_PHONE_1, `New Order: ${order.items.join(', ')}. User: ${order.name}. Address: ${order.address}. Confirm?`);
+    setTimeout(async () => {
+      await sendMessage(from, 'Vendor accepted your order! Collection time: 10:00 PM IST.');
+      await sendMessage(from, 'Vendor confirmation sent.');
+      await sendMessage(VENDOR_PHONE_1, `User accepted. Proceed with collection.`);
+      await sendMessage(DELIVERY_PARTNER_PHONE, `Pick up order from vendor. User: ${order.name}, Address: ${order.address}.`);
+      setTimeout(async () => {
+        await sendMessage(from, 'Delivery partner has collected your items. Progress: In Transit.');
+        await sendMessage(from, 'Estimated delivery: 11:00 PM IST.');
+        setTimeout(async () => {
+          await sendMessage(from, 'Order delivered! Please rate us: [👍] [👎]');
+          await sendMessage(DELIVERY_PARTNER_PHONE, 'Delivery completed. Collect feedback.');
+        }, 5000);
+      }, 5000);
+    }, 5000);
+  } else if (message.includes('👍') || message.includes('👎')) {
+    await sendMessage(from, 'Thank you for your feedback!');
+    await saveOrder({ ...order, feedback: message });
+  }
+}
+
+// Webhook endpoints
 app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-    if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
-        console.log('✅ WEBHOOK_VERIFIED');
-        return res.status(200).send(challenge);
-    }
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode && token === VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
     res.sendStatus(403);
+  }
 });
 
-app.post('/webhook', async (req, res) => {
-    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-    if (!message) return res.sendStatus(200);
-
-    const from = message.from;
-
-    // ==> ROUTE TO PROXY HANDLERS IF THE SENDER IS A VENDOR OR DP <==
-    if (from === VENDOR_PHONE_1) {
-        await handleVendorMessage(from, message);
-        return res.sendStatus(200);
-    }
-    if (from === DELIVERY_PARTNER_PHONE) {
-        await handleDeliveryPartnerMessage(from, message);
-        return res.sendStatus(200);
-    }
-    // ==> END PROXY ROUTING <==
-
-    const session = sessions[from] || { step: 'greet' };
-    const messageType = message.type;
-    let userInput = '';
-
-    if (messageType === 'text') {
-        userInput = message.text.body.trim().toLowerCase();
-    } else if (messageType === 'interactive') {
-        userInput = message.interactive.button_reply?.id || message.interactive.list_reply?.id;
-    } else if (messageType === 'location') {
-        session.location = message.location;
-    }
-
-    try {
-        switch (session.step) {
-            case 'greet':
-                await sendWelcomeMenu(from);
-                session.step = 'wait_initial_choice';
-                break;
-
-            case 'wait_initial_choice':
-                if (userInput === 'order_now') {
-                    await sendCatalogMenu(from);
-                    session.step = 'ordering_catalog';
-                } else if (userInput === 'contact_us') {
-                    await sendText(from, 'You can reach us at support@yourfoodapp.com or call +91-1234567890.');
-                    session.step = 'greet'; // Reset
-                } else { // Help or misunderstood
-                    await sendText(from, 'Use the buttons to navigate. Select "Order Now" to see our menu!');
-                }
-                break;
-
-            case 'ordering_catalog':
-                if (messageType === 'order') {
-                    const orderId = `ORD-${Date.now()}`;
-                    session.order = {
-                        orderId,
-                        customerPhone: from,
-                        cart: message.order.product_items,
-                        total: message.order.product_items.reduce((sum, item) => sum + (item.item_price * item.quantity), 0),
-                        status: 'initiated',
-                        createdAt: new Date()
-                    };
-                    await saveOrUpdateOrder(session.order);
-                    await requestUserLocation(from);
-                    session.step = 'get_location';
-                } else {
-                    await sendText(from, "Please choose items from our menu by clicking 'View items' and submit your cart.");
-                }
-                break;
-
-            case 'get_location':
-                if (session.location) {
-                    const { latitude, longitude } = session.location;
-                    const nearestVendor = await findNearestVendor([longitude, latitude]);
-
-                    if (!nearestVendor) {
-                        await sendText(from, "We're sorry, we couldn't find a restaurant that delivers to your location at the moment.");
-                        delete sessions[from];
-                        break;
-                    }
-                    
-                    session.order.vendor = { name: nearestVendor.name, phone: nearestVendor.phone };
-                    session.order.status = 'pending_vendor_acceptance';
-                    session.order.location = session.location;
-                    await saveOrUpdateOrder(session.order);
-                    
-                    await sendOrderToVendor(nearestVendor.phone, session.order);
-                    await sendText(from, `Great! We've found a restaurant nearby: *${nearestVendor.name}*.\n\nWe're just waiting for them to confirm your order. We'll notify you in a moment!`);
-                    session.step = 'awaiting_vendor_acceptance';
-                } else {
-                    await sendText(from, "Please share your location using the button so we can find the nearest restaurant for you.");
-                }
-                break;
-
-            // Further steps are triggered by proxy handlers, not direct user input.
+app.post('/webhook', (req, res) => {
+  res.sendStatus(200);
+  if (req.body.object === 'whatsapp_business_account') {
+    req.body.entry.forEach(entry => {
+      entry.changes.forEach(change => {
+        if (change.value.messages) {
+          change.value.messages.forEach(message => handleMessage(message));
         }
-
-        sessions[from] = session;
-    } catch (error) {
-        console.error('Error processing user message:', error);
-    }
-
-    res.sendStatus(200);
+      });
+    });
+  }
 });
 
-// ================== PROXY HANDLERS ==================
-
-async function handleVendorMessage(from, message) {
-    const text = message.text?.body?.toLowerCase() || '';
-    const [command, orderId] = text.split(' ');
-
-    if (!orderId) return;
-
-    const order = await getOrder(orderId.toUpperCase());
-    if (!order) return;
-
-    if (command === 'accept') {
-        order.status = 'confirmed_by_vendor';
-        await saveOrUpdateOrder(order);
-
-        // Notify user
-        await sendText(order.customerPhone, `✅ Good news! *${order.vendor.name}* has accepted your order *${order.orderId}*.\n\nEstimated preparation time is 15-20 minutes. We're now assigning a delivery partner.`);
-        
-        // Find and notify delivery partner
-        const dp = await findAvailableDeliveryPartner();
-        if (dp) {
-            order.deliveryPartner = { name: dp.name, phone: dp.phone };
-            order.status = 'awaiting_pickup';
-            await saveOrUpdateOrder(order);
-            await sendOrderToDeliveryPartner(dp.phone, order);
-            await sendText(order.customerPhone, `🛵 A delivery partner, *${dp.name}*, has been assigned to your order!`);
-        } else {
-            await sendText(order.customerPhone, "We're currently finding a delivery partner. We'll update you shortly.");
-        }
-    } else if (command === 'reject') {
-        order.status = 'rejected_by_vendor';
-        await saveOrUpdateOrder(order);
-        await sendText(order.customerPhone, `❌ We're sorry, but *${order.vendor.name}* is unable to fulfill your order *${order.orderId}* at the moment. Please try ordering again later.`);
-        delete sessions[order.customerPhone];
-    }
-}
-
-async function handleDeliveryPartnerMessage(from, message) {
-    const text = message.text?.body?.toLowerCase() || '';
-    const [command, orderId] = text.split(' ');
-    
-    if (!orderId) return;
-
-    const order = await getOrder(orderId.toUpperCase());
-    if (!order) return;
-
-    if (command === 'pickedup') {
-        order.status = 'in_transit';
-        await saveOrUpdateOrder(order);
-        await sendProgressUpdate(order.customerPhone, 'pickedup');
-    } else if (command === 'delivered') {
-        order.status = 'delivered';
-        await saveOrUpdateOrder(order);
-        await sendProgressUpdate(order.customerPhone, 'delivered');
-        
-        // Ask for feedback
-        await sendText(order.customerPhone, 'How was your experience? Please rate us from 1 (Poor) to 5 (Excellent)!');
-        if (sessions[order.customerPhone]) {
-            sessions[order.customerPhone].step = 'awaiting_feedback';
-        }
-    }
-}
-
-
-// ================== HELPER FUNCTIONS (API CALLS) ==================
-
-async function sendMessage(data) {
-    try {
-        await axios({
-            method: 'POST',
-            url: `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`,
-            headers: {
-                'Authorization': `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                'Content-Type': 'application/json'
-            },
-            data
-        });
-    } catch (error) {
-        console.error('Error sending message:', error.response?.data || error.message);
-    }
-}
-
-async function sendText(to, text) {
-    await sendMessage({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
-}
-
-async function sendWelcomeMenu(to) {
-    await sendMessage({
-        messaging_product: 'whatsapp', to, type: 'interactive',
-        interactive: {
-            type: 'button',
-            body: { text: 'Welcome to our Food Ordering service! How can we help you today?' },
-            action: { buttons: [
-                { type: 'reply', reply: { id: 'order_now', title: '🛍 Order Now' } },
-                { type: 'reply', reply: { id: 'contact_us', title: '📞 Contact Us' } },
-                { type: 'reply', reply: { id: 'help', title: '❓ Help' } }
-            ]}
-        }
-    });
-}
-
-async function sendCatalogMenu(to) {
-    await sendMessage({
-        messaging_product: 'whatsapp', to, type: 'interactive',
-        interactive: {
-            type: 'product_list',
-            header: { type: 'text', text: 'Our Delicious Menu' },
-            body: { text: 'Tap below to see our menu and add items to your cart. 😋' },
-            footer: { text: 'Powered by Whastapp' },
-            action: {
-                catalog_id: process.env.CATALOG_ID,
-                sections: [ { title: 'Menu', product_items: [ /* You can feature up to 30 items here */ ] } ]
-            }
-        }
-    });
-}
-
-async function requestUserLocation(to) {
-    await sendMessage({
-        messaging_product: 'whatsapp', to, type: 'interactive',
-        interactive: {
-            type: 'button',
-            body: { text: 'To find the nearest restaurants, please share your current location.' },
-            action: { buttons: [ { type: 'reply', reply: { id: 'location_button', title: '📍 Share Location' } } ] }
-        }
-    });
-}
-
-async function sendProgressUpdate(to, stage) {
-    let timeline = '';
-    if (stage === 'pickedup') {
-        timeline = '✅ Order Confirmed\n✅ Food is being prepared\n✅ Picked up by Delivery Partner\n_... On the way!_\n\nYour order is on its way! Estimated delivery time is 15 minutes.';
-    } else if (stage === 'delivered') {
-        timeline = '✅ Order Confirmed\n✅ Food is being prepared\n✅ Picked up by Delivery Partner\n✅ Delivered!\n\nWe hope you enjoy your meal! 😊';
-    }
-    await sendText(to, timeline);
-}
-
-// Functions to message proxies
-async function sendOrderToVendor(vendorPhone, order) {
-    const items = order.cart.map(item => `${item.quantity} x ${item.product_retailer_id}`).join('\n');
-    const message = `*New Order Alert: ${order.orderId}*\n\nItems:\n${items}\n\nTotal: ₹${order.total}\n\nReply with "accept ${order.orderId}" or "reject ${order.orderId}"`;
-    await sendText(vendorPhone, message);
-}
-
-async function sendOrderToDeliveryPartner(dpPhone, order) {
-    const message = `*New Delivery Task: ${order.orderId}*\n\nPickup from: *${order.vendor.name}*\nDeliver to: Near ${order.location.name || 'customer location'}\n\nReply "pickedup ${order.orderId}" once you collect the order.`;
-    await sendText(dpPhone, message);
-}
-
-// ================== SERVER START ==================
-connectDB().then(() => {
-    seedDatabase();
-    app.listen(port, () => {
-        console.log(`✅ Server is running on port ${port}`);
-    });
-});
+// Render compatibility: Use environment port or default to 3000
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
