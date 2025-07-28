@@ -49,6 +49,7 @@ const verifiedNumbers = [
 // Session states
 const SESSION_STATES = {
   INITIAL: 'initial',
+  CATALOG_BROWSING: 'catalog_browsing',
   WAITING_FOR_NAME: 'waiting_for_name',
   WAITING_FOR_ADDRESS: 'waiting_for_address',
   WAITING_FOR_PAYMENT: 'waiting_for_payment',
@@ -67,7 +68,10 @@ function getUserSession(phoneNumber) {
     sessions[phoneNumber] = {
       state: SESSION_STATES.INITIAL,
       userData: {},
-      orderData: {},
+      orderData: {
+        items: [],
+        total: 0
+      },
       timestamp: new Date()
     };
   }
@@ -168,6 +172,23 @@ async function sendCatalog(to) {
   }
 }
 
+// Function to get product details from Facebook catalog
+async function getProductDetails(productId) {
+  try {
+    const url = `https://graph.facebook.com/v20.0/${productId}?fields=name,price,description,retailer_id&access_token=${ACCESS_TOKEN}`;
+    const response = await axios.get(url);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Error fetching product details:', error);
+    return {
+      name: 'Unknown Product',
+      price: '0',
+      description: 'Product details unavailable',
+      retailer_id: productId
+    };
+  }
+}
+
 // Message handlers
 async function handleWelcomeMessage(phoneNumber) {
   if (!isVerifiedNumber(phoneNumber)) {
@@ -194,21 +215,118 @@ How can we assist you today?`;
 async function handleOrderNow(phoneNumber) {
   await sendCatalog(phoneNumber);
   
-  setTimeout(async () => {
-    const message = `Please select items from our catalog above. 
+  const message = `Please browse our catalog above and select the items you need.
 
-Once you've made your selection, I'll help you complete your order! 📦`;
+👆 Tap on items to add them to your cart
+📦 Once you're done selecting, click "Done Selecting" below`;
+  
+  const buttons = [
+    { type: 'reply', reply: { id: 'catalog_done', title: '✅ Done Selecting' } },
+    { type: 'reply', reply: { id: 'view_cart', title: '🛒 View Cart' } },
+    { type: 'reply', reply: { id: 'need_help', title: '❓ Need Help' } }
+  ];
+  
+  await sendInteractiveMessage(phoneNumber, message, buttons);
+  updateUserSession(phoneNumber, { state: SESSION_STATES.CATALOG_BROWSING });
+}
+
+async function handleCatalogSelection(phoneNumber, orderData) {
+  const session = getUserSession(phoneNumber);
+  
+  try {
+    // Parse the order data from WhatsApp catalog message
+    const productItems = orderData.order?.product_items || [];
+    const items = [];
+    let total = 0;
     
-    const buttons = [
-      { type: 'reply', reply: { id: 'catalog_done', title: '✅ Done Selecting' } },
-      { type: 'reply', reply: { id: 'need_help', title: '❓ Need Help' } }
-    ];
+    // Process each selected item
+    for (const item of productItems) {
+      const productDetails = await getProductDetails(item.product_retailer_id);
+      const quantity = parseInt(item.quantity) || 1;
+      const itemPrice = parseFloat(productDetails.price) || 0;
+      const itemTotal = itemPrice * quantity;
+      
+      const orderItem = {
+        productId: item.product_retailer_id,
+        name: productDetails.name,
+        quantity: quantity,
+        price: itemPrice,
+        total: itemTotal,
+        currency: item.currency || 'INR'
+      };
+      
+      items.push(orderItem);
+      total += itemTotal;
+    }
     
-    await sendInteractiveMessage(phoneNumber, message, buttons);
-  }, 3000);
+    // Update session with actual catalog selections
+    session.orderData.items = items;
+    session.orderData.total = total;
+    
+    updateUserSession(phoneNumber, session);
+    
+    // Show cart summary
+    await showCartSummary(phoneNumber);
+    
+  } catch (error) {
+    console.error('❌ Error processing catalog selection:', error);
+    await sendTextMessage(phoneNumber, '❌ There was an error processing your selection. Please try again or contact support.');
+  }
+}
+
+async function showCartSummary(phoneNumber) {
+  const session = getUserSession(phoneNumber);
+  const items = session.orderData.items;
+  
+  if (!items || items.length === 0) {
+    await sendTextMessage(phoneNumber, '🛒 Your cart is empty. Please select items from the catalog first.');
+    return;
+  }
+  
+  let itemsList = '🛒 *Your Cart:*\n\n';
+  items.forEach((item, index) => {
+    itemsList += `${index + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.total}\n\n`;
+  });
+  
+  itemsList += `*Total Amount: ₹${session.orderData.total}*`;
+  
+  const buttons = [
+    { type: 'reply', reply: { id: 'proceed_checkout', title: '✅ Proceed to Checkout' } },
+    { type: 'reply', reply: { id: 'add_more_items', title: '➕ Add More Items' } },
+    { type: 'reply', reply: { id: 'clear_cart', title: '🗑️ Clear Cart' } }
+  ];
+  
+  await sendInteractiveMessage(phoneNumber, itemsList, buttons);
 }
 
 async function handleCatalogDone(phoneNumber) {
+  const session = getUserSession(phoneNumber);
+  
+  // Check if user has selected any items
+  if (!session.orderData.items || session.orderData.items.length === 0) {
+    await sendTextMessage(phoneNumber, '🛒 You haven\'t selected any items yet. Please browse the catalog and select items first.');
+    
+    const buttons = [
+      { type: 'reply', reply: { id: 'order_now', title: '🛍️ Browse Catalog Again' } },
+      { type: 'reply', reply: { id: 'help', title: '❓ Need Help' } }
+    ];
+    
+    await sendInteractiveMessage(phoneNumber, 'Would you like to browse our catalog?', buttons);
+    return;
+  }
+  
+  // Show cart summary first
+  await showCartSummary(phoneNumber);
+}
+
+async function handleProceedCheckout(phoneNumber) {
+  const session = getUserSession(phoneNumber);
+  
+  if (!session.orderData.items || session.orderData.items.length === 0) {
+    await handleOrderNow(phoneNumber);
+    return;
+  }
+  
   const message = `Great! Now let's get your details to process the order.
 
 What's your name? 👤`;
@@ -247,13 +365,11 @@ async function handleAddressInput(phoneNumber, input) {
   if (input === 'share_location') {
     session.userData.address = 'Location will be shared';
     await sendTextMessage(phoneNumber, '📍 Please share your location using WhatsApp location feature, or type your address manually.');
-    // Don't change state yet, wait for actual location or address
     return;
   } else if (input === 'type_address') {
     await sendTextMessage(phoneNumber, '✍️ Please type your complete pickup/delivery address:');
     return;
   } else {
-    // This is the actual address input
     session.userData.address = input;
   }
   
@@ -278,24 +394,11 @@ async function handlePaymentMethod(phoneNumber, paymentMethod) {
   const session = getUserSession(phoneNumber);
   session.userData.paymentMethod = paymentMethod;
   
-  // Mock order items (in real scenario, fetch from catalog selection)
-  // You can modify this to get actual selected items from WhatsApp catalog
-  const mockItems = [
-    { name: 'Shirt Wash & Iron', quantity: 3, price: 60 },
-    { name: 'Jeans Wash', quantity: 2, price: 80 },
-    { name: 'Bedsheet Wash', quantity: 1, price: 50 }
-  ];
+  const items = session.orderData.items;
+  const total = session.orderData.total;
   
-  const total = mockItems.reduce((sum, item) => sum + item.price, 0);
-  
-  session.orderData = {
-    items: mockItems,
-    total: total,
-    paymentMethod: paymentMethod
-  };
-  
-  let itemsList = mockItems.map(item => 
-    `• ${item.name} (${item.quantity}x) - ₹${item.price}`
+  let itemsList = items.map((item, index) => 
+    `${index + 1}. ${item.name} (${item.quantity}x) - ₹${item.total}`
   ).join('\n');
   
   const paymentText = {
@@ -331,10 +434,8 @@ Ready to place your order?`;
 async function handlePlaceOrder(phoneNumber) {
   const session = getUserSession(phoneNumber);
   
-  // Generate order number
   const orderNumber = `ORD${Date.now()}`;
   
-  // Prepare order data for database
   const orderData = {
     orderNumber: orderNumber,
     customerPhone: phoneNumber,
@@ -342,28 +443,25 @@ async function handlePlaceOrder(phoneNumber) {
     address: session.userData.address,
     items: session.orderData.items,
     total: session.orderData.total,
-    paymentMethod: session.orderData.paymentMethod,
+    paymentMethod: session.userData.paymentMethod,
     status: 'pending_vendor_confirmation',
     createdAt: new Date(),
     updatedAt: new Date()
   };
   
   try {
-    // Save order to database using your existing function
     const savedOrder = await saveOrder(orderData);
     console.log('✅ Order saved to database:', savedOrder);
     
     session.orderData.orderId = savedOrder.insertedId || savedOrder._id;
     session.orderData.orderNumber = orderNumber;
     
-    // Update user order status
     userOrderStatus[phoneNumber] = {
       orderId: session.orderData.orderId,
       orderNumber: orderNumber,
       status: 'pending_vendor_confirmation'
     };
     
-    // Confirm to customer
     await sendTextMessage(phoneNumber, `🎉 Order placed successfully!
 
 *Order Number:* ${orderNumber}
@@ -371,20 +469,26 @@ async function handlePlaceOrder(phoneNumber) {
 
 We're connecting you with the nearest vendor. Please wait... ⏳`);
     
-    // Find and assign vendor
-    const assignedVendor = vendors[0]; // For now, assign first vendor
+    const assignedVendor = vendors[0];
     await assignVendorToOrder(session.orderData.orderId, assignedVendor);
     
-    // Notify vendor
+    // Create vendor message with actual items
+    let vendorItemsList = session.orderData.items.map(item => 
+      `• ${item.name} (${item.quantity}x)`
+    ).join('\n');
+    
     const vendorMessage = `🆕 *New Order Received*
 
 *Order #:* ${orderNumber}
 *Customer:* ${session.userData.name}
 *Phone:* ${phoneNumber}
 *Address:* ${session.userData.address}
-*Items:* ${session.orderData.items.length} items
+
+*Items:*
+${vendorItemsList}
+
 *Total:* ₹${session.orderData.total}
-*Payment:* ${session.orderData.paymentMethod}
+*Payment:* ${session.userData.paymentMethod}
 
 Please respond to accept or reject this order.`;
     
@@ -400,10 +504,10 @@ Please respond to accept or reject this order.`;
       orderData: session.orderData
     });
     
-    // Auto-accept simulation for demo (remove in production)
+    // Auto-accept simulation for demo
     setTimeout(() => {
       simulateVendorAcceptance(phoneNumber, orderNumber);
-    }, 30000); // 30 seconds
+    }, 15000); // 15 seconds
     
   } catch (error) {
     console.error('❌ Error placing order:', error);
@@ -411,25 +515,20 @@ Please respond to accept or reject this order.`;
   }
 }
 
+// Continue with existing simulation functions...
 async function simulateVendorAcceptance(phoneNumber, orderNumber) {
   const session = getUserSession(phoneNumber);
   
   try {
-    // Update order status in database
-    const orderId = session.orderData.orderId;
-    // You might need to create an updateOrder function in your db.js
     console.log(`✅ Order ${orderNumber} accepted by vendor`);
     
-    // Update user order status
     if (userOrderStatus[phoneNumber]) {
       userOrderStatus[phoneNumber].status = 'vendor_accepted';
     }
     
-    // Schedule collection time (2 hours from now)
     const collectionTime = new Date();
     collectionTime.setHours(collectionTime.getHours() + 2);
     
-    // Notify customer
     await sendTextMessage(phoneNumber, `✅ Great news! Your order has been accepted by our vendor.
 
 📅 *Collection Schedule:*
@@ -438,7 +537,6 @@ Time: ${collectionTime.toLocaleTimeString()}
 
 Our team will arrive at your location for pickup. Please keep your items ready! 📦`);
     
-    // Confirm with vendor
     await sendTextMessage(VENDOR_PHONE_1, `✅ Order ${orderNumber} confirmed with customer. 
 
 *Collection Details:*
@@ -448,7 +546,6 @@ Time: ${collectionTime.toLocaleTimeString()}
 
 Proceed with collection as scheduled.`);
     
-    // Notify delivery partner
     const deliveryMessage = `🚛 *New Pickup Assignment*
 
 *Order #:* ${orderNumber}
@@ -464,162 +561,156 @@ Please coordinate with vendor for pickup.`;
     
     updateUserSession(phoneNumber, { state: SESSION_STATES.VENDOR_CONFIRMATION });
     
-    // Simulate collection progress
     setTimeout(() => {
       simulateCollection(phoneNumber, orderNumber);
-    }, 120000); // 2 minutes for demo
+    }, 60000); // 1 minute for demo
     
   } catch (error) {
     console.error('❌ Error in vendor acceptance:', error);
   }
 }
 
-async function simulateCollection(phoneNumber, orderNumber) {
+// Main message handler
+async function handleMessage(message) {
+  const phoneNumber = message.from;
   const session = getUserSession(phoneNumber);
   
-  // Update order status
-  if (userOrderStatus[phoneNumber]) {
-    userOrderStatus[phoneNumber].status = 'collected';
+  let messageText = '';
+  let buttonId = '';
+  let orderData = null;
+  
+  if (message.text?.body) {
+    messageText = message.text.body.toLowerCase().trim();
+  } else if (message.interactive?.button_reply?.id) {
+    buttonId = message.interactive.button_reply.id;
+  } else if (message.order) {
+    // Handle catalog order - this is the key fix!
+    orderData = message.order;
+    await handleCatalogSelection(phoneNumber, orderData);
+    return;
+  } else if (message.location) {
+    messageText = `Lat: ${message.location.latitude}, Long: ${message.location.longitude}`;
   }
   
-  await sendTextMessage(phoneNumber, `📦 Your items have been collected!
-
-*Order #:* ${orderNumber}
-*Status:* In Transit 🚛
-*Processing at:* Premium Laundry Center
-*Estimated Completion:* 4-6 hours
-
-We'll notify you once your items are ready for delivery! ✨
-
-*Progress Timeline:*
-✅ Order Placed
-✅ Vendor Assigned  
-✅ Items Collected
-🔄 Processing
-⏳ Quality Check
-⏳ Ready for Delivery`);
+  const input = messageText || buttonId;
   
-  await sendTextMessage(DELIVERY_PARTNER_PHONE, `✅ Items collected for order ${orderNumber}. Processing initiated at laundry center.`);
+  console.log(`📱 Message from ${phoneNumber}: "${input}", State: ${session.state}`);
   
-  updateUserSession(phoneNumber, { state: SESSION_STATES.IN_TRANSIT });
-  
-  // Simulate delivery ready
-  setTimeout(() => {
-    simulateDeliveryReady(phoneNumber, orderNumber);
-  }, 300000); // 5 minutes for demo
-}
+  try {
+    // Handle vendor responses
+    if (vendors.includes(phoneNumber) && input.startsWith('accept_')) {
+      const orderNumber = input.replace('accept_', '');
+      await sendTextMessage(phoneNumber, `✅ Order ${orderNumber} accepted successfully!`);
+      for (const [customerPhone, status] of Object.entries(userOrderStatus)) {
+        if (status.orderNumber === orderNumber) {
+          simulateVendorAcceptance(customerPhone, orderNumber);
+          break;
+        }
+      }
+      return;
+    }
+    
+    if (vendors.includes(phoneNumber) && input.startsWith('reject_')) {
+      const orderNumber = input.replace('reject_', '');
+      await sendTextMessage(phoneNumber, `❌ Order ${orderNumber} rejected.`);
+      return;
+    }
+    
+    // Handle customer messages based on state
+    switch (session.state) {
+      case SESSION_STATES.INITIAL:
+        if (input === 'hi' || input === 'hello' || input === 'start' || input === 'menu') {
+          await handleWelcomeMessage(phoneNumber);
+        } else if (input === 'order_now') {
+          await handleOrderNow(phoneNumber);
+        } else if (input === 'contact_us') {
+          await handleContactUs(phoneNumber);
+        } else if (input === 'help') {
+          await handleHelp(phoneNumber);
+        } else {
+          await handleWelcomeMessage(phoneNumber);
+        }
+        break;
+        
+      case SESSION_STATES.CATALOG_BROWSING:
+        if (input === 'catalog_done') {
+          await handleCatalogDone(phoneNumber);
+        } else if (input === 'view_cart') {
+          await showCartSummary(phoneNumber);
+        } else if (input === 'add_more_items') {
+          await handleOrderNow(phoneNumber);
+        } else if (input === 'clear_cart') {
+          session.orderData.items = [];
+          session.orderData.total = 0;
+          updateUserSession(phoneNumber, { orderData: session.orderData });
+          await sendTextMessage(phoneNumber, '🗑️ Cart cleared! Browse the catalog to add new items.');
+          await handleOrderNow(phoneNumber);
+        } else if (input === 'proceed_checkout') {
+          await handleProceedCheckout(phoneNumber);
+        } else if (input === 'need_help') {
+          await handleHelp(phoneNumber);
+        } else {
+          await sendTextMessage(phoneNumber, 'Please select items from the catalog or use the buttons provided.');
+        }
+        break;
+        
+      case SESSION_STATES.WAITING_FOR_NAME:
+        await handleNameInput(phoneNumber, input);
+        break;
+        
+      case SESSION_STATES.WAITING_FOR_ADDRESS:
+        await handleAddressInput(phoneNumber, input);
+        break;
+        
+      case SESSION_STATES.WAITING_FOR_PAYMENT:
+        if (['cash', 'upi', 'card'].includes(input)) {
+          await handlePaymentMethod(phoneNumber, input);
+        } else {
+          await sendTextMessage(phoneNumber, '❓ Please select a payment method using the buttons provided.');
+        }
+        break;
+        
+      case SESSION_STATES.ORDER_SUMMARY:
+        if (input === 'place_order') {
+          await handlePlaceOrder(phoneNumber);
+        } else if (input === 'modify_order') {
+          await handleOrderNow(phoneNumber);
+        }
+        break;
+        
+      case SESSION_STATES.DELIVERED:
+        if (input.startsWith('rate_')) {
+          await handleFeedback(phoneNumber, input);
+        }
+        break;
+        
+      default:
+        if (input === 'catalog_done') {
+          await handleCatalogDone(phoneNumber);
+        } else if (input === 'order_now') {
+          await handleOrderNow(phoneNumber);
+        } else if (input === 'contact_us') {
+          await handleContactUs(phoneNumber);
+        } else if (input === 'help') {
+          await handleHelp(phoneNumber);
+        } else if (input === 'status' && userOrderStatus[phoneNumber]) {
+          const status = userOrderStatus[phoneNumber];
+          await sendTextMessage(phoneNumber, `📋 *Order Status*
 
-async function simulateDeliveryReady(phoneNumber, orderNumber) {
-  const session = getUserSession(phoneNumber);
-  
-  // Update order status
-  if (userOrderStatus[phoneNumber]) {
-    userOrderStatus[phoneNumber].status = 'ready_for_delivery';
+Order #: ${status.orderNumber}
+Status: ${status.status}
+${status.feedback ? `Feedback: ${status.feedback}` : ''}`);
+        } else {
+          await sendTextMessage(phoneNumber, '❓ I didn\'t understand that. Type "hi" to start over or use the menu buttons.');
+        }
+    }
+  } catch (error) {
+    console.error('❌ Error handling message:', error);
+    await sendTextMessage(phoneNumber, '⚠️ Something went wrong. Please try again or contact support.');
   }
-  
-  const deliveryTime = new Date();
-  deliveryTime.setMinutes(deliveryTime.getMinutes() + 30);
-  
-  await sendTextMessage(phoneNumber, `🎉 Your laundry is ready for delivery!
-
-*Order #:* ${orderNumber}
-*Processing:* Completed ✅
-*Estimated Delivery:* ${deliveryTime.toLocaleTimeString()}
-*Total Amount:* ₹${session.orderData.total}
-
-*Progress Timeline:*
-✅ Order Placed
-✅ Vendor Assigned  
-✅ Items Collected
-✅ Processing Complete
-✅ Quality Check Done
-🚚 Out for Delivery
-
-Our delivery partner is on the way! 🚚`);
-  
-  // Notify delivery partner
-  await sendTextMessage(DELIVERY_PARTNER_PHONE, `🚚 Order ${orderNumber} ready for delivery.
-
-Customer: ${session.userData.name}
-Address: ${session.userData.address}
-Amount: ₹${session.orderData.total}
-Payment: ${session.orderData.paymentMethod}
-
-Please proceed with delivery.`);
-  
-  // Simulate delivery completion
-  setTimeout(() => {
-    simulateDeliveryComplete(phoneNumber, orderNumber);
-  }, 180000); // 3 minutes for demo
 }
 
-async function simulateDeliveryComplete(phoneNumber, orderNumber) {
-  const session = getUserSession(phoneNumber);
-  
-  // Update order status
-  if (userOrderStatus[phoneNumber]) {
-    userOrderStatus[phoneNumber].status = 'delivered';
-  }
-  
-  await sendTextMessage(phoneNumber, `✅ *Order Delivered Successfully!*
-
-*Order #:* ${orderNumber}
-*Delivery Time:* ${new Date().toLocaleTimeString()}
-
-Thank you for choosing Sparkling Clean Laundry! 
-
-Please rate your experience:`);
-  
-  const buttons = [
-    { type: 'reply', reply: { id: 'rate_excellent', title: '⭐⭐⭐⭐⭐ Excellent' } },
-    { type: 'reply', reply: { id: 'rate_good', title: '⭐⭐⭐⭐ Good' } },
-    { type: 'reply', reply: { id: 'rate_average', title: '⭐⭐⭐ Average' } }
-  ];
-  
-  await sendInteractiveMessage(phoneNumber, 'How was your experience?', buttons);
-  
-  await sendTextMessage(DELIVERY_PARTNER_PHONE, `✅ Order ${orderNumber} delivered successfully to ${session.userData.name}. Please collect customer feedback if possible.`);
-  
-  updateUserSession(phoneNumber, { state: SESSION_STATES.DELIVERED });
-}
-
-async function handleFeedback(phoneNumber, rating) {
-  const session = getUserSession(phoneNumber);
-  const orderNumber = session.orderData.orderNumber;
-  
-  const ratingText = {
-    'rate_excellent': '⭐⭐⭐⭐⭐ Excellent',
-    'rate_good': '⭐⭐⭐⭐ Good', 
-    'rate_average': '⭐⭐⭐ Average'
-  };
-  
-  // Update order status
-  if (userOrderStatus[phoneNumber]) {
-    userOrderStatus[phoneNumber].status = 'completed';
-    userOrderStatus[phoneNumber].feedback = rating;
-  }
-  
-  await sendTextMessage(phoneNumber, `🙏 Thank you for rating us ${ratingText[rating]}!
-
-Your feedback helps us improve our service quality.
-
-*Order Summary:*
-Order #: ${orderNumber}
-Total: ₹${session.orderData.total}
-Status: Completed ✅
-
-We look forward to serving you again! For new orders, just say "hi" 😊`);
-  
-  // Reset session
-  updateUserSession(phoneNumber, { 
-    state: SESSION_STATES.INITIAL,
-    userData: {},
-    orderData: {}
-  });
-  
-  console.log(`✅ Order ${orderNumber} completed with feedback: ${rating}`);
-}
-
+// Continue with rest of the existing functions...
 async function handleContactUs(phoneNumber) {
   const message = `📞 *Contact Information*
 
@@ -685,130 +776,144 @@ Need anything specific?`;
   await sendInteractiveMessage(phoneNumber, message, buttons);
 }
 
-// Main message handler
-async function handleMessage(message) {
-  const phoneNumber = message.from;
+async function handleFeedback(phoneNumber, rating) {
+  const session = getUserSession(phoneNumber);
+  const orderNumber = session.orderData.orderNumber;
+  
+  const ratingText = {
+    'rate_excellent': '⭐⭐⭐⭐⭐ Excellent',
+    'rate_good': '⭐⭐⭐⭐ Good', 
+    'rate_average': '⭐⭐⭐ Average'
+  };
+  
+  if (userOrderStatus[phoneNumber]) {
+    userOrderStatus[phoneNumber].status = 'completed';
+    userOrderStatus[phoneNumber].feedback = rating;
+  }
+  
+  await sendTextMessage(phoneNumber, `🙏 Thank you for rating us ${ratingText[rating]}!
+
+Your feedback helps us improve our service quality.
+
+*Order Summary:*
+Order #: ${orderNumber}
+Total: ₹${session.orderData.total}
+Status: Completed ✅
+
+We look forward to serving you again! For new orders, just say "hi" 😊`);
+  
+  // Reset session
+  updateUserSession(phoneNumber, { 
+    state: SESSION_STATES.INITIAL,
+    userData: {},
+    orderData: { items: [], total: 0 }
+  });
+  
+  console.log(`✅ Order ${orderNumber} completed with feedback: ${rating}`);
+}
+
+// Continue with remaining simulation functions
+async function simulateCollection(phoneNumber, orderNumber) {
   const session = getUserSession(phoneNumber);
   
-  // Get message content
-  let messageText = '';
-  let buttonId = '';
-  
-  if (message.text?.body) {
-    messageText = message.text.body.toLowerCase().trim();
-  } else if (message.interactive?.button_reply?.id) {
-    buttonId = message.interactive.button_reply.id;
-  } else if (message.interactive?.catalog_message?.product_retailer_id) {
-    // Handle catalog selection
-    buttonId = 'catalog_done';
-  } else if (message.location) {
-    // Handle location sharing
-    messageText = `Lat: ${message.location.latitude}, Long: ${message.location.longitude}`;
+  if (userOrderStatus[phoneNumber]) {
+    userOrderStatus[phoneNumber].status = 'collected';
   }
   
-  const input = messageText || buttonId;
-  
-  console.log(`📱 Message from ${phoneNumber}: "${input}", State: ${session.state}`);
-  
-  try {
-    // Handle vendor responses
-    if (vendors.includes(phoneNumber) && input.startsWith('accept_')) {
-      const orderNumber = input.replace('accept_', '');
-      await sendTextMessage(phoneNumber, `✅ Order ${orderNumber} accepted successfully!`);
-      // Find customer and notify
-      for (const [customerPhone, status] of Object.entries(userOrderStatus)) {
-        if (status.orderNumber === orderNumber) {
-          simulateVendorAcceptance(customerPhone, orderNumber);
-          break;
-        }
-      }
-      return;
-    }
-    
-    if (vendors.includes(phoneNumber) && input.startsWith('reject_')) {
-      const orderNumber = input.replace('reject_', '');
-      await sendTextMessage(phoneNumber, `❌ Order ${orderNumber} rejected.`);
-      // Handle order rejection logic here
-      return;
-    }
-    
-    // Handle customer messages based on state
-    switch (session.state) {
-      case SESSION_STATES.INITIAL:
-        if (input === 'hi' || input === 'hello' || input === 'start' || input === 'menu') {
-          await handleWelcomeMessage(phoneNumber);
-        } else if (input === 'order_now') {
-          await handleOrderNow(phoneNumber);
-        } else if (input === 'contact_us') {
-          await handleContactUs(phoneNumber);
-        } else if (input === 'help') {
-          await handleHelp(phoneNumber);
-        } else {
-          await handleWelcomeMessage(phoneNumber);
-        }
-        break;
-        
-      case SESSION_STATES.WAITING_FOR_NAME:
-        if (input === 'catalog_done') {
-          await handleCatalogDone(phoneNumber);
-        } else if (input === 'need_help') {
-          await handleHelp(phoneNumber);
-        } else {
-          await handleNameInput(phoneNumber, input);
-        }
-        break;
-        
-      case SESSION_STATES.WAITING_FOR_ADDRESS:
-        await handleAddressInput(phoneNumber, input);
-        break;
-        
-      case SESSION_STATES.WAITING_FOR_PAYMENT:
-        if (['cash', 'upi', 'card'].includes(input)) {
-          await handlePaymentMethod(phoneNumber, input);
-        } else {
-          await sendTextMessage(phoneNumber, '❓ Please select a payment method using the buttons provided.');
-        }
-        break;
-        
-      case SESSION_STATES.ORDER_SUMMARY:
-        if (input === 'place_order') {
-          await handlePlaceOrder(phoneNumber);
-        } else if (input === 'modify_order') {
-          await handleOrderNow(phoneNumber);
-        }
-        break;
-        
-      case SESSION_STATES.DELIVERED:
-        if (input.startsWith('rate_')) {
-          await handleFeedback(phoneNumber, input);
-        }
-        break;
-        
-      default:
-        // Handle common commands in any state
-        if (input === 'catalog_done') {
-          await handleCatalogDone(phoneNumber);
-        } else if (input === 'order_now') {
-          await handleOrderNow(phoneNumber);
-        } else if (input === 'contact_us') {
-          await handleContactUs(phoneNumber);
-        } else if (input === 'help') {
-          await handleHelp(phoneNumber);
-        } else if (input === 'status' && userOrderStatus[phoneNumber]) {
-          const status = userOrderStatus[phoneNumber];
-          await sendTextMessage(phoneNumber, `📋 *Order Status*
+  await sendTextMessage(phoneNumber, `📦 Your items have been collected!
 
-Order #: ${status.orderNumber}
-Status: ${status.status}
-${status.feedback ? `Feedback: ${status.feedback}` : ''}`);
-        } else {
-          await sendTextMessage(phoneNumber, '❓ I didn\'t understand that. Type "hi" to start over or use the menu buttons.');
-        }
-    }
-  } catch (error) {
-    console.error('❌ Error handling message:', error);
-    await sendTextMessage(phoneNumber, '⚠️ Something went wrong. Please try again or contact support.');
+*Order #:* ${orderNumber}
+*Status:* In Transit 🚛
+*Processing at:* Premium Laundry Center
+*Estimated Completion:* 4-6 hours
+
+We'll notify you once your items are ready for delivery! ✨
+
+*Progress Timeline:*
+✅ Order Placed
+✅ Vendor Assigned  
+✅ Items Collected
+🔄 Processing
+⏳ Quality Check
+⏳ Ready for Delivery`);
+  
+  await sendTextMessage(DELIVERY_PARTNER_PHONE, `✅ Items collected for order ${orderNumber}. Processing initiated at laundry center.`);
+  
+  updateUserSession(phoneNumber, { state: SESSION_STATES.IN_TRANSIT });
+  
+  setTimeout(() => {
+    simulateDeliveryReady(phoneNumber, orderNumber);
+  }, 120000); // 2 minutes for demo
+}
+
+async function simulateDeliveryReady(phoneNumber, orderNumber) {
+  const session = getUserSession(phoneNumber);
+  
+  if (userOrderStatus[phoneNumber]) {
+    userOrderStatus[phoneNumber].status = 'ready_for_delivery';
   }
+  
+  const deliveryTime = new Date();
+  deliveryTime.setMinutes(deliveryTime.getMinutes() + 30);
+  
+  await sendTextMessage(phoneNumber, `🎉 Your laundry is ready for delivery!
+
+*Order #:* ${orderNumber}
+*Processing:* Completed ✅
+*Estimated Delivery:* ${deliveryTime.toLocaleTimeString()}
+*Total Amount:* ₹${session.orderData.total}
+
+*Progress Timeline:*
+✅ Order Placed
+✅ Vendor Assigned  
+✅ Items Collected
+✅ Processing Complete
+✅ Quality Check Done
+🚚 Out for Delivery
+
+Our delivery partner is on the way! 🚚`);
+  
+  await sendTextMessage(DELIVERY_PARTNER_PHONE, `🚚 Order ${orderNumber} ready for delivery.
+
+Customer: ${session.userData.name}
+Address: ${session.userData.address}
+Amount: ₹${session.orderData.total}
+Payment: ${session.userData.paymentMethod}
+
+Please proceed with delivery.`);
+  
+  setTimeout(() => {
+    simulateDeliveryComplete(phoneNumber, orderNumber);
+  }, 90000); // 1.5 minutes for demo
+}
+
+async function simulateDeliveryComplete(phoneNumber, orderNumber) {
+  const session = getUserSession(phoneNumber);
+  
+  if (userOrderStatus[phoneNumber]) {
+    userOrderStatus[phoneNumber].status = 'delivered';
+  }
+  
+  await sendTextMessage(phoneNumber, `✅ *Order Delivered Successfully!*
+
+*Order #:* ${orderNumber}
+*Delivery Time:* ${new Date().toLocaleTimeString()}
+
+Thank you for choosing Sparkling Clean Laundry! 
+
+Please rate your experience:`);
+  
+  const buttons = [
+    { type: 'reply', reply: { id: 'rate_excellent', title: '⭐⭐⭐⭐⭐ Excellent' } },
+    { type: 'reply', reply: { id: 'rate_good', title: '⭐⭐⭐⭐ Good' } },
+    { type: 'reply', reply: { id: 'rate_average', title: '⭐⭐⭐ Average' } }
+  ];
+  
+  await sendInteractiveMessage(phoneNumber, 'How was your experience?', buttons);
+  
+  await sendTextMessage(DELIVERY_PARTNER_PHONE, `✅ Order ${orderNumber} delivered successfully to ${session.userData.name}. Please collect customer feedback if possible.`);
+  
+  updateUserSession(phoneNumber, { state: SESSION_STATES.DELIVERED });
 }
 
 // Webhook verification
@@ -844,7 +949,6 @@ app.post('/webhook', (req, res) => {
           });
         }
         
-        // Handle message status updates (delivered, read, etc.)
         if (change.value?.statuses) {
           change.value.statuses.forEach(status => {
             console.log('📊 Message status update:', status);
@@ -866,7 +970,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Admin endpoint to check sessions (for debugging)
+// Admin endpoint to check sessions
 app.get('/admin/sessions', (req, res) => {
   res.status(200).json({
     sessions: sessions,
@@ -874,7 +978,7 @@ app.get('/admin/sessions', (req, res) => {
   });
 });
 
-// Admin endpoint to clear sessions (for debugging)
+// Admin endpoint to clear sessions
 app.post('/admin/clear-sessions', (req, res) => {
   const phoneNumber = req.body.phoneNumber;
   
@@ -883,14 +987,26 @@ app.post('/admin/clear-sessions', (req, res) => {
     delete userOrderStatus[phoneNumber];
     res.status(200).json({ message: `Session cleared for ${phoneNumber}` });
   } else {
-    // Clear all sessions
     Object.keys(sessions).forEach(key => delete sessions[key]);
     Object.keys(userOrderStatus).forEach(key => delete userOrderStatus[key]);
     res.status(200).json({ message: 'All sessions cleared' });
   }
 });
 
-// Manual message sending endpoint (for testing)
+// API endpoint to get catalog items (for testing)
+app.get('/admin/catalog/:catalogId', async (req, res) => {
+  try {
+    const catalogId = req.params.catalogId;
+    const url = `https://graph.facebook.com/v20.0/${catalogId}/products?fields=name,price,description,retailer_id,image_url&access_token=${ACCESS_TOKEN}`;
+    const response = await axios.get(url);
+    res.status(200).json(response.data);
+  } catch (error) {
+    console.error('❌ Error fetching catalog:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Manual message sending endpoint
 app.post('/admin/send-message', async (req, res) => {
   const { to, message, type = 'text' } = req.body;
   
@@ -903,6 +1019,8 @@ app.post('/admin/send-message', async (req, res) => {
       await sendTextMessage(to, message);
     } else if (type === 'interactive' && req.body.buttons) {
       await sendInteractiveMessage(to, message, req.body.buttons);
+    } else if (type === 'catalog') {
+      await sendCatalog(to);
     }
     
     res.status(200).json({ success: true, message: 'Message sent successfully' });
@@ -963,6 +1081,32 @@ app.get('/admin/verified-numbers', (req, res) => {
   res.status(200).json({ verifiedNumbers });
 });
 
+// Test catalog order endpoint (for debugging)
+app.post('/admin/test-catalog-order', async (req, res) => {
+  const { phoneNumber, mockOrder } = req.body;
+  
+  try {
+    const mockMessage = {
+      from: phoneNumber,
+      order: mockOrder || {
+        catalog_id: CATALOG_ID,
+        product_items: [
+          {
+            product_retailer_id: 'test_product_1',
+            quantity: '2',
+            currency: 'INR'
+          }
+        ]
+      }
+    };
+    
+    await handleMessage(mockMessage);
+    res.status(200).json({ success: true, message: 'Test catalog order processed' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('❌ Unhandled error:', error);
@@ -992,5 +1136,6 @@ app.listen(port, () => {
   console.log(`🔧 Health check: https://your-domain.com/health`);
   console.log(`👥 Verified numbers: ${verifiedNumbers.length}`);
   console.log(`🏪 Vendors: ${vendors.length}`);
-  console.log(`✅ Bot is ready to receive messages!`);
+  console.log(`🛒 Catalog ID: ${CATALOG_ID}`);
+  console.log(`✅ Bot is ready to receive messages and catalog orders!`);
 });
