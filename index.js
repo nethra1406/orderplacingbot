@@ -31,13 +31,6 @@ connectDB().then(() => {
 // In-memory data (consider moving to DB for production)
 const sessions = {};
 const vendors = [VENDOR_PHONE_1];
-const verifiedNumbers = [
-  '919916814517',
-  '917358791933', 
-  '919444631398',
-  '919043331484',
-  '919710486191'
-];
 
 // Session states
 const SESSION_STATES = {
@@ -120,10 +113,9 @@ async function sendCatalog(to) {
     type: 'interactive',
     interactive: {
       type: 'catalog_message',
-      body: { text: '🧺 Browse our laundry services and select the items you need!' },
+      body: { text: '🧺 Please browse our services and select the items you need!' },
       action: {
         name: 'catalog_message',
-        // FIX 1: Corrected the structure for catalog_id
         catalog_id: CATALOG_ID
       }
     }
@@ -146,14 +138,13 @@ async function getProductDetails(productId) {
     return response.data;
   } catch (error) {
     console.error(`❌ Error fetching product details for ${productId}:`, error.response?.data || error.message);
-    // Return null to indicate failure
     return null;
   }
 }
 
 // Message handlers
 async function handleWelcomeMessage(phoneNumber) {
-  const welcomeMessage = `🙏 Welcome to *Sparkling Clean Laundry*!\n\nHow can we assist you today?`;
+  const welcomeMessage = `🙏 Welcome to *Wrinkl*!\n\nHow can we assist you today?`;
   const buttons = [
     { type: 'reply', reply: { id: 'order_now', title: '🛍️ Place Order' } },
     { type: 'reply', reply: { id: 'contact_us', title: '📞 Contact Us' } }
@@ -182,12 +173,9 @@ async function handleCatalogSelection(phoneNumber, orderPayload) {
     let total = 0;
 
     for (const item of productItems) {
-      // FIX 2: Added resilient logic.
-      // Try to get details from API, but use webhook data as a fallback.
       const productDetails = await getProductDetails(item.product_retailer_id);
       
       const itemName = productDetails ? productDetails.name : 'Selected Item';
-      // The price from the webhook is more reliable than the API call failing
       const itemPrice = parseFloat(item.item_price);
       const quantity = parseInt(item.quantity, 10) || 1;
       const itemTotal = itemPrice * quantity;
@@ -230,7 +218,6 @@ async function showCartSummary(phoneNumber) {
   const summaryMessage = `🛒 *Your Cart Summary:*\n\n${itemsList}\n\n*Total Amount: ₹${total.toFixed(2)}*`;
 
   const buttons = [
-    // FIX 3: Shortened the button title to be under 20 characters
     { type: 'reply', reply: { id: 'proceed_checkout', title: '✅ Checkout' } },
     { type: 'reply', reply: { id: 'add_more_items', title: '➕ Add More Items' } },
     { type: 'reply', reply: { id: 'clear_cart', title: '🗑️ Clear Cart' } }
@@ -238,9 +225,6 @@ async function showCartSummary(phoneNumber) {
   
   await sendInteractiveMessage(phoneNumber, summaryMessage, buttons);
 }
-
-// ... (The rest of your handler functions: handleProceedCheckout, handleNameInput, etc. remain the same)
-// ... I'm omitting them here for brevity, but you should keep them in your file.
 
 async function handleProceedCheckout(phoneNumber) {
     const session = getUserSession(phoneNumber);
@@ -253,16 +237,37 @@ async function handleProceedCheckout(phoneNumber) {
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_NAME });
 }
 
+// RE-IMPLEMENTED with buttons
 async function handleNameInput(phoneNumber, name) {
     const session = getUserSession(phoneNumber);
     session.userData.name = name;
-    await sendTextMessage(phoneNumber, `Thanks ${name}!\n\nNow, please share your complete pickup & delivery address. 📍`);
+  
+    const message = `Thanks ${name}!\n\nNow, how would you like to provide your complete pickup & delivery address? 📍`;
+    const buttons = [
+        { type: 'reply', reply: { id: 'type_address', title: '✍️ Type Address' } },
+        { type: 'reply', reply: { id: 'share_location', title: '📍 Share Location' } }
+    ];
+
+    await sendInteractiveMessage(phoneNumber, message, buttons);
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_ADDRESS, userData: session.userData });
 }
 
-async function handleAddressInput(phoneNumber, address) {
+// RE-IMPLEMENTED with button logic
+async function handleAddressInput(phoneNumber, input) {
     const session = getUserSession(phoneNumber);
-    session.userData.address = address;
+
+    if (input === 'type_address') {
+        await sendTextMessage(phoneNumber, 'Please type your full address now.');
+        return; // Wait for user to type the address
+    }
+
+    if (input === 'share_location') {
+        await sendTextMessage(phoneNumber, 'Please use the (+) button in WhatsApp to share your live or current location.');
+        return; // Wait for user to share location
+    }
+    
+    // This part runs when the user actually sends their address text or location
+    session.userData.address = input;
     const buttons = [
       { type: 'reply', reply: { id: 'cash', title: '💵 Cash on Delivery' } },
       { type: 'reply', reply: { id: 'upi', title: '📱 UPI (Online)' } }
@@ -340,6 +345,16 @@ async function handleMessage(message) {
     await handleCatalogSelection(phoneNumber, message.order);
     return;
   }
+  
+  // Handle location messages
+  if (message.type === 'location') {
+      const session = getUserSession(phoneNumber);
+      if (session.state === SESSION_STATES.WAITING_FOR_ADDRESS) {
+          const address = `Lat: ${message.location.latitude}, Long: ${message.location.longitude}`;
+          await handleAddressInput(phoneNumber, address);
+      }
+      return;
+  }
 
   const session = getUserSession(phoneNumber);
   let input = '';
@@ -376,7 +391,8 @@ async function handleMessage(message) {
         await handleNameInput(phoneNumber, input);
         break;
       
-      case SESSION_ATES.WAITING_FOR_ADDRESS:
+      // FIX: Corrected the typo from SESSION_ATES to SESSION_STATES
+      case SESSION_STATES.WAITING_FOR_ADDRESS:
         await handleAddressInput(phoneNumber, input);
         break;
 
