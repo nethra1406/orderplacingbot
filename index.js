@@ -42,7 +42,7 @@ async function sendMessage(to, message, buttons = null) {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     });
   } catch (error) {
-    console.error('Error sending message:', error);
+    console.error('Error sending message:', error.response ? error.response.data : error.message);
   }
 }
 
@@ -53,10 +53,10 @@ async function sendCatalog(to) {
       messaging_product: 'whatsapp',
       to,
       type: 'catalog_message',
-      catalog_id: CATALOG_ID, // Use the provided catalog ID
+      catalog_id: CATALOG_ID,
     });
   } catch (error) {
-    console.error('Error sending catalog:', error);
+    console.error('Error sending catalog:', error.response ? error.response.data : error.message);
   }
 }
 
@@ -113,13 +113,13 @@ async function handleMessage(event) {
     await sendMessage(from, 'Order placed! Awaiting vendor acceptance...');
     await sendMessage(VENDOR_PHONE_1, `New Order: ${order.items.join(', ')}. User: ${order.name}. Address: ${order.address}. Confirm?`);
     setTimeout(async () => {
-      await sendMessage(from, 'Vendor accepted your order! Collection time: 10:00 PM IST.');
+      await sendMessage(from, 'Vendor accepted your order! Collection time: 12:00 AM IST (Jul 29).');
       await sendMessage(from, 'Vendor confirmation sent.');
       await sendMessage(VENDOR_PHONE_1, `User accepted. Proceed with collection.`);
       await sendMessage(DELIVERY_PARTNER_PHONE, `Pick up order from vendor. User: ${order.name}, Address: ${order.address}.`);
       setTimeout(async () => {
         await sendMessage(from, 'Delivery partner has collected your items. Progress: In Transit.');
-        await sendMessage(from, 'Estimated delivery: 11:00 PM IST.');
+        await sendMessage(from, 'Estimated delivery: 01:00 AM IST (Jul 29).');
         setTimeout(async () => {
           await sendMessage(from, 'Order delivered! Please rate us: [👍] [👎]');
           await sendMessage(DELIVERY_PARTNER_PHONE, 'Delivery completed. Collect feedback.');
@@ -157,6 +157,6 @@ app.post('/webhook', (req, res) => {
   }
 });
 
-// Render compatibility: Use environment port or default to 3000
-const PORT = process.env.PORT || 3000;
+// Port configuration
+const PORT = process.env.PORT; // Use Render's assigned port (e.g., 10000)
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
