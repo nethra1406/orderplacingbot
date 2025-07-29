@@ -12,7 +12,6 @@ let db;
 async function connectDB() {
   if (db) return db; // Return existing connection if available
   try {
-    // FIX: Removed deprecated options
     client = new MongoClient(MONGODB_URI);
     
     await client.connect();
@@ -49,7 +48,7 @@ async function saveOrder(orderData) {
     const collection = db.collection('orders');
     const order = {
       ...orderData,
-      _id: new ObjectId() // Ensure new ID is created
+      _id: new ObjectId()
     };
     
     const result = await collection.insertOne(order);
@@ -77,6 +76,19 @@ async function getOrderById(orderId) {
     console.error('❌ Error getting order:', error);
     throw error;
   }
+}
+
+// NEW: Function to get an order by its unique number
+async function getOrderByNumber(orderNumber) {
+    try {
+      if (!db) await connectDB();
+      const collection = db.collection('orders');
+      const order = await collection.findOne({ orderNumber });
+      return order;
+    } catch (error) {
+      console.error('❌ Error getting order by number:', error);
+      throw error;
+    }
 }
 
 // Update order status
@@ -113,7 +125,7 @@ async function updateOrderStatus(orderId, status, additionalData = {}) {
 // Assign vendor to order
 async function assignVendorToOrder(orderId, vendorPhone) {
     try {
-      const result = await updateOrderStatus(orderId, 'vendor_assigned', {
+      const result = await updateOrderStatus(orderId, 'pending_vendor_confirmation', {
         vendorPhone,
         assignedAt: new Date()
       });
@@ -130,9 +142,7 @@ module.exports = {
   connectDB,
   saveOrder,
   getOrderById,
+  getOrderByNumber, // <-- EXPORTED
   updateOrderStatus,
   assignVendorToOrder,
-  // Keep other exports if you need them
-  // saveVendor,
-  // linkOrderToVendor
 };
