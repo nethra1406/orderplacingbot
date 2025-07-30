@@ -1,20 +1,12 @@
-// index.js - The Complete, Fine-Tuned Bot
+// index.js - Final Version with Dual Role Functionality
 
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
 const {
-  saveOrder,
-  connectDB,
-  assignVendorToOrder,
-  getOrderByNumber,
-  updateOrderStatus,
-  getVendorByPhone,
-  getUserByPhone,
-  // Make sure you have a way to access the raw 'db' object for the 'track order' feature
-  // If not, add `getDB` to your db.js exports: `const getDB = () => db;`
-  getDB
+  saveOrder, connectDB, assignVendorToOrder, getOrderByNumber,
+  updateOrderStatus, getVendorByPhone, getUserByPhone, getDB
 } = require('./db');
 
 const app = express();
@@ -85,15 +77,12 @@ async function getProductDetails(productId) {
 function generateTimeline(status) {
     const timelineSteps = [
         { state: 'vendor_accepted', text: 'Order Accepted' },
-        { state: 'out_for_pickup', text: 'Out for Pickup' },
         { state: 'processing_at_facility', text: 'Items Collected & Processing' },
         { state: 'out_for_delivery', text: 'Out for Delivery' },
         { state: 'completed', text: 'Delivered' }
     ];
-
     let timelineMessage = '📊 *Your Order Timeline*\n\n';
     let currentStateFound = false;
-
     for (const step of timelineSteps) {
         if (step.state === status) {
             timelineMessage += `➡️ *${step.text}*\n`;
@@ -110,7 +99,7 @@ function generateTimeline(status) {
 async function processVendorResponse(vendorPhone, orderNumber, action) {
     const order = await getOrderByNumber(orderNumber);
     if (!order) return await sendTextMessage(vendorPhone, `⚠️ Order #${orderNumber} not found.`);
-
+    
     if (action === 'accept') {
         await updateOrderStatus(order._id, 'vendor_accepted', { vendorId: vendorPhone });
         await sendTextMessage(vendorPhone, `✅ You accepted Order #${orderNumber}.`);
@@ -133,12 +122,12 @@ async function processDeliveryPartnerUpdate(deliveryPartnerPhone, orderNumber, s
 
     if (status === 'picked_up') {
         await updateOrderStatus(order._id, 'processing_at_facility', { deliveryPartnerId: deliveryPartnerPhone });
-        await sendTextMessage(deliveryPartnerPhone, `✅ Pickup confirmed for #${orderNumber}. Please proceed to the facility.`);
-        await sendTextMessage(order.customerPhone, `📦 Your items for order #${orderNumber} have been collected! You can track progress by sending "track order".`);
+        await sendTextMessage(deliveryPartnerPhone, `✅ Pickup confirmed for #${orderNumber}.`);
+        await sendTextMessage(order.customerPhone, `📦 Your items for order #${orderNumber} have been collected!`);
     } else if (status === 'delivered') {
         await updateOrderStatus(order._id, 'completed');
-        await sendTextMessage(deliveryPartnerPhone, `✅ Delivery for #${orderNumber} confirmed. Great job!`);
-        await sendTextMessage(order.customerPhone, `✅ Your order #${orderNumber} has been delivered!\n\nWe hope you enjoy your fresh, clean clothes. ✨`);
+        await sendTextMessage(deliveryPartnerPhone, `✅ Delivery for #${orderNumber} confirmed.`);
+        await sendTextMessage(order.customerPhone, `✅ Your order #${orderNumber} has been delivered!`);
         
         const buttons = [
             { type: 'reply', reply: { id: `feedback_5_${orderNumber}`, title: '⭐️⭐️⭐️⭐️⭐️' } },
@@ -269,6 +258,7 @@ async function handlePlaceOrder(phoneNumber) {
         const vendorMessage = `🆕 *New Order Received*\n\n*Order #:* ${orderData.orderNumber}\n*Customer:* ${orderData.customerName}\n*Address:* ${orderData.address}\n*Total:* ₹${orderData.total.toFixed(2)}`;
         const vendorButtons = [{ type: 'reply', reply: { id: `accept_${orderData.orderNumber}`, title: '✅ Accept' } }, { type: 'reply', reply: { id: `reject_${orderData.orderNumber}`, title: '❌ Reject' } }];
         await sendInteractiveMessage(VENDOR_PHONE_1, vendorMessage, vendorButtons);
+        // Reset session for next order
         session.state = SESSION_STATES.INITIAL;
         session.orderData = { items: new Map() };
         session.userData = {};
@@ -285,33 +275,43 @@ async function handleMessage(message) {
     const btnId = message.interactive?.button_reply?.id;
     const input = btnId || msgBody;
 
-    if (!input) return;
+    // This flag will track if we performed an operator-specific action
+    let isOperatorAction = false;
 
-    // --- Operator Workflows (Vendor, Delivery Partner) ---
-    const vendor = await getVendorByPhone(phoneNumber);
-    if (vendor && btnId && (btnId.startsWith('accept_') || btnId.startsWith('reject_'))) {
-        const [action, orderNumber] = btnId.split('_');
-        return await processVendorResponse(phoneNumber, orderNumber, action);
-    }
-    if (phoneNumber === DELIVERY_PARTNER_PHONE) {
-        if (btnId && (btnId.startsWith('picked_up_') || btnId.startsWith('delivered_'))) {
+    // --- Operator Workflow Check ---
+    if (btnId) {
+        const vendor = await getVendorByPhone(phoneNumber);
+        if (vendor && (btnId.startsWith('accept_') || btnId.startsWith('reject_'))) {
+            const [action, orderNumber] = btnId.split('_');
+            await processVendorResponse(phoneNumber, orderNumber, action);
+            isOperatorAction = true;
+        }
+        if (phoneNumber === DELIVERY_PARTNER_PHONE && (btnId.startsWith('picked_up_') || btnId.startsWith('delivered_'))) {
             const [status, orderNumber] = btnId.split(/_(.+)/);
-            return await processDeliveryPartnerUpdate(phoneNumber, orderNumber, status);
-        }
-        if (msgBody && msgBody.startsWith('deliver ')) {
-            const [, orderNumber] = msgBody.split(' ');
-            const order = await getOrderByNumber(orderNumber);
-            if(order) {
-                await updateOrderStatus(order._id, 'out_for_delivery');
-                await sendTextMessage(order.customerPhone, `🚚 Good news! Your order #${orderNumber} is out for delivery and should arrive within 60 minutes.`);
-                const buttons = [{ type: 'reply', reply: { id: `delivered_${orderNumber}`, title: '✅ Confirm Delivery' } }];
-                await sendInteractiveMessage(phoneNumber, `🚀 Starting delivery for #${orderNumber}.`, buttons);
-            }
-            return;
+            await processDeliveryPartnerUpdate(phoneNumber, orderNumber, status);
+            isOperatorAction = true;
         }
     }
+    if (phoneNumber === DELIVERY_PARTNER_PHONE && msgBody && msgBody.startsWith('deliver ')) {
+        const [, orderNumber] = msgBody.split(' ');
+        const order = await getOrderByNumber(orderNumber);
+        if(order) {
+            await updateOrderStatus(order._id, 'out_for_delivery');
+            await sendTextMessage(order.customerPhone, `🚚 Good news! Your order #${orderNumber} is out for delivery and should arrive within 60 minutes.`);
+            const buttons = [{ type: 'reply', reply: { id: `delivered_${orderNumber}`, title: '✅ Confirm Delivery' } }];
+            await sendInteractiveMessage(phoneNumber, `🚀 Starting delivery for #${orderNumber}.`, buttons);
+        }
+        isOperatorAction = true;
+    }
 
-    // --- Customer Workflow ---
+    // If we performed an operator action, stop here.
+    if (isOperatorAction) {
+        return;
+    }
+
+    // --- Customer Workflow (Runs if no operator action was taken) ---
+    if (!input && message.type !== 'order' && message.type !== 'location') return;
+
     if (message.type === 'order') return await handleCatalogSelection(phoneNumber, message.order);
     if (message.type === 'location') {
         if (getUserSession(phoneNumber).state === SESSION_STATES.WAITING_FOR_ADDRESS) {
@@ -320,14 +320,15 @@ async function handleMessage(message) {
     }
     if (btnId && btnId.startsWith('feedback_')) {
         const [, rating, orderNumber] = btnId.split('_');
-        await updateOrderStatus(orderNumber, 'feedback_received', { rating: `${rating} stars` });
+        // In a real app, you would save this feedback to the order document
+        console.log(`Received feedback for ${orderNumber}: ${rating} stars.`);
         return await sendTextMessage(phoneNumber, "🙏 Thank you for your valuable feedback!");
     }
     if (msgBody === 'track' || msgBody === 'track order') {
         const db = getDB();
-        const orders = await db.collection('orders').find({ customerPhone: phoneNumber, status: { $nin: ['completed', 'vendor_rejected'] } }).sort({ createdAt: -1 }).limit(1).toArray();
+        const orders = await db.collection('orders').find({ customerPhone: phoneNumber, status: { $nin: ['completed', 'vendor_rejected', 'pending_vendor_confirmation'] } }).sort({ createdAt: -1 }).limit(1).toArray();
         if (orders.length > 0) return await sendTextMessage(phoneNumber, generateTimeline(orders[0].status));
-        return await sendTextMessage(phoneNumber, "You have no active orders to track.");
+        return await sendTextMessage(phoneNumber, "You have no active orders to track right now.");
     }
 
     const session = getUserSession(phoneNumber);
