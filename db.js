@@ -78,7 +78,7 @@ async function getOrderById(orderId) {
   }
 }
 
-// NEW: Function to get an order by its unique number
+// Get an order by its unique number
 async function getOrderByNumber(orderNumber) {
     try {
       if (!db) await connectDB();
@@ -114,7 +114,7 @@ async function updateOrderStatus(orderId, status, additionalData = {}) {
       throw new Error('Order not found for update');
     }
     
-    console.log('✅ Order status updated:', { orderId, status });
+    console.log('✅ Order status updated:', { orderId: objectId, status });
     return result;
   } catch (error) {
     console.error('❌ Error updating order status:', error);
@@ -137,12 +137,42 @@ async function assignVendorToOrder(orderId, vendorPhone) {
     }
 }
 
+// NEW: Function to check if a phone number belongs to a vendor
+async function getVendorByPhone(phoneNumber) {
+  const db = await connectDB();
+  return await db.collection('vendors').findOne({ phoneNumber });
+}
+
+// NEW: Function to get a user and check if they are verified
+async function getUserByPhone(phoneNumber) {
+  const db = await connectDB();
+  return await db.collection('users').findOne({ phoneNumber });
+}
+
+// NEW: Function to close the database connection (for the seed script)
+async function closeDB() {
+    if (client) {
+        await client.close();
+        client = null;
+        db = null;
+        console.log('MongoDB connection closed.');
+    }
+}
+
+// NEW: Helper function to get the DB instance (for the track order feature)
+const getDB = () => db;
+
+
 // Export all functions
 module.exports = {
   connectDB,
   saveOrder,
   getOrderById,
-  getOrderByNumber, // <-- EXPORTED
+  getOrderByNumber,
   updateOrderStatus,
   assignVendorToOrder,
+  getVendorByPhone,   // <-- ADDED
+  getUserByPhone,     // <-- ADDED
+  closeDB,            // <-- ADDED
+  getDB               // <-- ADDED
 };
