@@ -68,12 +68,12 @@ function updateUserSession(phoneNumber, updates) {
 async function sendTextMessage(to, message) {
     const payload = { messaging_product: 'whatsapp', to, type: 'text', text: { body: message } };
     try {
-      await axios.post(https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages, payload, {
-        headers: { 'Authorization': Bearer ${ACCESS_TOKEN} }
+      await axios.post(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, payload, {
+        headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` }
       });
-      console.log(✅ Text message sent to ${to});
+      console.log(`✅ Text message sent to ${to}`);
     } catch (error) {
-      console.error(❌ Error sending text to ${to}:, error.response?.data || error.message);
+      console.error(`❌ Error sending text to ${to}:`, error.response?.data || error.message);
     }
 }
 
@@ -83,12 +83,12 @@ async function sendInteractiveMessage(to, message, buttons) {
       interactive: { type: 'button', body: { text: message }, action: { buttons: buttons } }
     };
     try {
-      await axios.post(https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages, payload, {
-        headers: { 'Authorization': Bearer ${ACCESS_TOKEN} }
+      await axios.post(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, payload, {
+        headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` }
       });
-      console.log(✅ Interactive message sent to ${to});
+      console.log(`✅ Interactive message sent to ${to}`);
     } catch (error) {
-      console.error(❌ Error sending interactive message to ${to}:, error.response?.data || error.message);
+      console.error(`❌ Error sending interactive message to ${to}:`, error.response?.data || error.message);
       throw error;
     }
 }
@@ -103,10 +103,10 @@ async function sendCatalog(to) {
       }
     };
     try {
-      await axios.post(https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages, payload, {
-        headers: { 'Authorization': Bearer ${ACCESS_TOKEN} }
+      await axios.post(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, payload, {
+        headers: { 'Authorization': `Bearer ${ACCESS_TOKEN}` }
       });
-      console.log(✅ Catalog sent to ${to});
+      console.log(`✅ Catalog sent to ${to}`);
     } catch (error) {
       console.error('❌ Error sending catalog:', error.response?.data || error.message);
     }
@@ -114,11 +114,11 @@ async function sendCatalog(to) {
 
 async function getProductDetails(productId) {
     try {
-      const url = https://graph.facebook.com/v20.0/${productId}?fields=name,price&access_token=${ACCESS_TOKEN};
+      const url = `https://graph.facebook.com/v20.0/${productId}?fields=name,price&access_token=${ACCESS_TOKEN}`;
       const response = await axios.get(url);
       return response.data;
     } catch (error) {
-      console.error(❌ Error fetching product details for ${productId}. This is likely an ACCESS TOKEN permission issue.);
+      console.error(`❌ Error fetching product details for ${productId}. This is likely an ACCESS TOKEN permission issue.`);
       return null;
     }
 }
@@ -127,8 +127,8 @@ async function getProductDetails(productId) {
 async function processVendorResponse(vendorPhone, orderNumber, action) {
     const order = await getOrderByNumber(orderNumber);
     if (!order) {
-        console.error(❌ Vendor responded for a non-existent order: ${orderNumber});
-        await sendTextMessage(vendorPhone, ⚠ Order #${orderNumber} not found.);
+        console.error(`❌ Vendor responded for a non-existent order: ${orderNumber}`);
+        await sendTextMessage(vendorPhone, `⚠️ Order #${orderNumber} not found.`);
         return;
     }
   
@@ -139,15 +139,15 @@ async function processVendorResponse(vendorPhone, orderNumber, action) {
         await updateOrderStatus(order._id, 'vendor_accepted');
   
         // 1. Confirm to Vendor
-        await sendTextMessage(vendorPhone, ✅ You have accepted Order #${orderNumber}.\nPlease coordinate with the delivery partner for pickup.);
+        await sendTextMessage(vendorPhone, `✅ You have accepted Order #${orderNumber}.\nPlease coordinate with the delivery partner for pickup.`);
   
         // 2. Notify Customer
-        const customerMessage = 🎉 Great news! Your order #${orderNumber} has been accepted.\n\nOur team is preparing for pickup and you will be notified again shortly.;
+        const customerMessage = `🎉 Great news! Your order #${orderNumber} has been accepted.\n\nOur team is preparing for pickup and you will be notified again shortly.`;
         await sendTextMessage(customerPhone, customerMessage);
   
         // 3. Notify Delivery Partner
         if (deliveryPhone) {
-            const deliveryMessage = 🚛 New Pickup Assignment!\n\n*Order #:* ${orderNumber}\n*Customer:* ${order.customerName}\n*Address:* ${order.address}\n*Total Items:* ${order.items.length}\n\nPlease coordinate with the vendor at ${vendorPhone} for pickup.;
+            const deliveryMessage = `🚛 New Pickup Assignment!\n\n*Order #:* ${orderNumber}\n*Customer:* ${order.customerName}\n*Address:* ${order.address}\n*Total Items:* ${order.items.length}\n\nPlease coordinate with the vendor at ${vendorPhone} for pickup.`;
             await sendTextMessage(deliveryPhone, deliveryMessage);
         }
   
@@ -155,30 +155,30 @@ async function processVendorResponse(vendorPhone, orderNumber, action) {
         await updateOrderStatus(order._id, 'vendor_rejected');
   
         // 1. Inform Vendor
-        await sendTextMessage(vendorPhone, ❌ You have rejected Order #${orderNumber}.);
+        await sendTextMessage(vendorPhone, `❌ You have rejected Order #${orderNumber}.`);
   
         // 2. Inform Customer
-        const customerMessage = ⚠ We're sorry, your order #${orderNumber} could not be processed at this moment.\nPlease contact support for assistance.;
+        const customerMessage = `⚠️ We're sorry, your order #${orderNumber} could not be processed at this moment.\nPlease contact support for assistance.`;
         await sendTextMessage(customerPhone, customerMessage);
   
         // 3. Inform Admin
         if (ADMIN_PHONE) {
-            await sendTextMessage(ADMIN_PHONE, 🚨 Vendor ${vendorPhone} REJECTED order #${orderNumber}. Manual follow-up needed.);
+            await sendTextMessage(ADMIN_PHONE, `🚨 Vendor ${vendorPhone} REJECTED order #${orderNumber}. Manual follow-up needed.`);
         }
     }
 }
 
 // --- Customer-Facing Handlers ---
 async function handleWelcomeMessage(phoneNumber) {
-    const welcomeMessage = 🙏 Welcome to *Wrinkl*!\n\nPremium laundry services at your doorstep. How can we help?;
-    const buttons = [{ type: 'reply', reply: { id: 'order_now', title: '🛍 Place Order' } }, { type: 'reply', reply: { id: 'contact_us', title: '📞 Contact Us' } }];
+    const welcomeMessage = `🙏 Welcome to *Wrinkl*!\n\nPremium laundry services at your doorstep. How can we help?`;
+    const buttons = [{ type: 'reply', reply: { id: 'order_now', title: '🛍️ Place Order' } }, { type: 'reply', reply: { id: 'contact_us', title: '📞 Contact Us' } }];
     await sendInteractiveMessage(phoneNumber, welcomeMessage, buttons);
     updateUserSession(phoneNumber, { state: SESSION_STATES.INITIAL });
 }
 
 async function handleOrderNow(phoneNumber) {
     await sendCatalog(phoneNumber);
-    const message = 👆 Please browse our catalog above.\n\nSend your cart to us when you're ready to proceed.;
+    const message = `👆 Please browse our catalog above.\n\nSend your cart to us when you're ready to proceed.`;
     await sendTextMessage(phoneNumber, message);
     updateUserSession(phoneNumber, { state: SESSION_STATES.CATALOG_Browse });
 }
@@ -206,26 +206,26 @@ async function showCartSummary(phoneNumber) {
         await sendTextMessage(phoneNumber, '🛒 Your cart is empty.');
         return;
     }
-    let itemsList = items.map((item, i) => ${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price.toFixed(2)} = ₹${item.total.toFixed(2)}).join('\n\n');
-    const summaryMessage = 🛒 *Your Cart Summary:*\n\n${itemsList}\n\n*Total Amount: ₹${total.toFixed(2)}*;
+    let itemsList = items.map((item, i) => `${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price.toFixed(2)} = ₹${item.total.toFixed(2)}`).join('\n\n');
+    const summaryMessage = `🛒 *Your Cart Summary:*\n\n${itemsList}\n\n*Total Amount: ₹${total.toFixed(2)}*`;
     const buttons = [
         { type: 'reply', reply: { id: 'proceed_checkout', title: '✅ Checkout' } },
         { type: 'reply', reply: { id: 'add_more_items', title: '➕ Add More' } },
-        { type: 'reply', reply: { id: 'clear_cart', title: '🗑 Clear Cart' } }
+        { type: 'reply', reply: { id: 'clear_cart', title: '🗑️ Clear Cart' } }
     ];
     await sendInteractiveMessage(phoneNumber, summaryMessage, buttons);
 }
 
 async function handleProceedCheckout(phoneNumber) {
-    await sendTextMessage(phoneNumber, Great! Let's get your details.\n\nWhat's your full name? 👤);
+    await sendTextMessage(phoneNumber, `Great! Let's get your details.\n\nWhat's your full name? 👤`);
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_NAME });
 }
 
 async function handleNameInput(phoneNumber, name) {
     const session = getUserSession(phoneNumber);
     session.userData.name = name;
-    const message = Thanks ${name}!\n\nHow would you like to provide your address? 📍;
-    const buttons = [{ type: 'reply', reply: { id: 'type_address', title: '✍ Type Address' } }, { type: 'reply', reply: { id: 'share_location', title: '📍 Share Location' } }];
+    const message = `Thanks ${name}!\n\nHow would you like to provide your address? 📍`;
+    const buttons = [{ type: 'reply', reply: { id: 'type_address', title: '✍️ Type Address' } }, { type: 'reply', reply: { id: 'share_location', title: '📍 Share Location' } }];
     await sendInteractiveMessage(phoneNumber, message, buttons);
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_ADDRESS, userData: session.userData });
 }
@@ -242,7 +242,7 @@ async function handleAddressInput(phoneNumber, input) {
     const session = getUserSession(phoneNumber);
     session.userData.address = input;
     const buttons = [{ type: 'reply', reply: { id: 'cash', title: '💵 Cash' } }, { type: 'reply', reply: { id: 'upi', title: '📱 UPI (Online)' } }];
-    await sendInteractiveMessage(phoneNumber, Got it! How would you like to pay? 💳, buttons);
+    await sendInteractiveMessage(phoneNumber, `Got it! How would you like to pay? 💳`, buttons);
     updateUserSession(phoneNumber, { state: SESSION_STATES.WAITING_FOR_PAYMENT, userData: session.userData });
 }
 
@@ -251,27 +251,27 @@ async function handlePaymentMethod(phoneNumber, paymentMethod) {
     session.userData.paymentMethod = paymentMethod;
     const { items, total } = session.orderData;
     const paymentText = { 'cash': '💵 Cash', 'upi': '📱 UPI (Online)' };
-    let itemsList = items.map(item => • ${item.name} (Qty: ${item.quantity})).join('\n');
-    const message = 📋 *Please Confirm Your Order*\n\n*Items:*\n${itemsList}\n\n*Total:* ₹${total.toFixed(2)}\n*Payment:* ${paymentText[paymentMethod]}\n*Customer:* ${session.userData.name}\n*Address:* ${session.userData.address}\n\nIs this correct?;
-    const buttons = [{ type: 'reply', reply: { id: 'place_order', title: '✅ Yes, Place Order' } }, { type: 'reply', reply: { id: 'modify_order', title: '✏ No, Modify' } }];
+    let itemsList = items.map(item => `• ${item.name} (Qty: ${item.quantity})`).join('\n');
+    const message = `📋 *Please Confirm Your Order*\n\n*Items:*\n${itemsList}\n\n*Total:* ₹${total.toFixed(2)}\n*Payment:* ${paymentText[paymentMethod]}\n*Customer:* ${session.userData.name}\n*Address:* ${session.userData.address}\n\nIs this correct?`;
+    const buttons = [{ type: 'reply', reply: { id: 'place_order', title: '✅ Yes, Place Order' } }, { type: 'reply', reply: { id: 'modify_order', title: '✏️ No, Modify' } }];
     await sendInteractiveMessage(phoneNumber, message, buttons);
     updateUserSession(phoneNumber, { state: SESSION_STATES.ORDER_SUMMARY });
 }
 
 async function handlePlaceOrder(phoneNumber) {
     const session = getUserSession(phoneNumber);
-    const orderNumber = ORD${Date.now()};
+    const orderNumber = `ORD${Date.now()}`;
     const orderData = { orderNumber, customerPhone: phoneNumber, ...session.userData, ...session.orderData, status: 'pending_vendor_confirmation', createdAt: new Date() };
 
     try {
         const savedOrder = await saveOrder(orderData);
-        await sendTextMessage(phoneNumber, ✅ Order placed successfully!\n*Order #:* ${orderNumber}\n\nYour order is now with our vendor for confirmation. You'll receive an update shortly! ⏱);
+        await sendTextMessage(phoneNumber, `✅ Order placed successfully!\n*Order #:* ${orderNumber}\n\nYour order is now with our vendor for confirmation. You'll receive an update shortly! ⏱️`);
         const assignedVendor = vendors[0];
         await assignVendorToOrder(savedOrder.insertedId, assignedVendor);
 
-        let vendorItemsList = orderData.items.map(item => • ${item.name} (x${item.quantity})).join('\n');
-        const vendorMessage = 🆕 *New Order Received*\n\n*Order #:* ${orderNumber}\n*Customer:* ${orderData.name}\n*Phone:* ${phoneNumber}\n*Address:* ${orderData.address}\n\n*Items:*\n${vendorItemsList}\n\n*Total:* ₹${orderData.total.toFixed(2)}\n*Payment:* ${orderData.paymentMethod};
-        const vendorButtons = [{ type: 'reply', reply: { id: accept_${orderNumber}, title: '✅ Accept' } }, { type: 'reply', reply: { id: reject_${orderNumber}, title: '❌ Reject' } }];
+        let vendorItemsList = orderData.items.map(item => `• ${item.name} (x${item.quantity})`).join('\n');
+        const vendorMessage = `🆕 *New Order Received*\n\n*Order #:* ${orderNumber}\n*Customer:* ${orderData.name}\n*Phone:* ${phoneNumber}\n*Address:* ${orderData.address}\n\n*Items:*\n${vendorItemsList}\n\n*Total:* ₹${orderData.total.toFixed(2)}\n*Payment:* ${orderData.paymentMethod}`;
+        const vendorButtons = [{ type: 'reply', reply: { id: `accept_${orderNumber}`, title: '✅ Accept' } }, { type: 'reply', reply: { id: `reject_${orderNumber}`, title: '❌ Reject' } }];
         await sendInteractiveMessage(assignedVendor, vendorMessage, vendorButtons);
 
         delete sessions[phoneNumber];
@@ -302,7 +302,7 @@ async function handleMessage(message) {
     if (message.type === 'location') {
         const session = getUserSession(phoneNumber);
         if (session.state === SESSION_STATES.WAITING_FOR_ADDRESS) {
-            const address = Location Pin: (Lat: ${message.location.latitude}, Long: ${message.location.longitude});
+            const address = `Location Pin: (Lat: ${message.location.latitude}, Long: ${message.location.longitude})`;
             await handleAddressInput(phoneNumber, address);
         }
         return;
@@ -312,7 +312,7 @@ async function handleMessage(message) {
     const input = message.text?.body.trim() || message.interactive?.button_reply?.id;
     if (!input) return;
 
-    console.log(📱 Message from ${phoneNumber}: "${input}", State: ${session.state});
+    console.log(`📱 Message from ${phoneNumber}: "${input}", State: ${session.state}`);
     try {
         switch (session.state) {
             case SESSION_STATES.INITIAL:
@@ -323,7 +323,7 @@ async function handleMessage(message) {
                 else if (input === 'add_more_items') await handleOrderNow(phoneNumber);
                 else if (input === 'clear_cart') {
                     updateUserSession(phoneNumber, { orderData: { items: [], total: 0 } });
-                    await sendTextMessage(phoneNumber, '🗑 Cart cleared!');
+                    await sendTextMessage(phoneNumber, '🗑️ Cart cleared!');
                     await handleOrderNow(phoneNumber);
                 }
                 break;
@@ -370,4 +370,4 @@ app.post('/webhook', (req, res) => {
     res.sendStatus(200);
 });
 
-app.listen(port, () => console.log(🚀 Server is running on port ${port}));
+app.listen(port, () => console.log(`🚀 Server is running on port ${port}`));
